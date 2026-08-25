@@ -31,6 +31,10 @@ let state = {
 };
 
 let currentPartFilter = '전체';
+let isPerformanceEditorOpen = false;
+let isTaskFormOpen = false;
+let currentView = 'home';
+let isSidebarOpen = false;
 
 /* ---------------- 데이터 로드 / 저장 ---------------- */
 
@@ -116,41 +120,97 @@ function render() {
   const risks = computeRisks(p, state.tasks, todayStr);
 
   root.innerHTML = `
-    ${renderHeader(p, dDay, stage)}
-    ${renderPerformanceForm(p)}
-    ${renderRisks(risks)}
-    ${renderTaskForm(p)}
-    ${renderTaskTable(p)}
-    ${renderDashboard(p, stage)}
-    ${renderPreShowChecklist()}
+    <div class="dashboard-shell">
+      <button type="button" class="mobile-menu-toggle" data-toggle-sidebar aria-label="메뉴 열기">MENU</button>
+      ${renderSidebar(p)}
+      <main class="dashboard-main">
+        ${renderCurrentView(p, dDay, stage, risks)}
+        ${renderFooter()}
+      </main>
+    </div>
   `;
 
   bindEvents();
 }
 
-function renderHeader(p, dDay, stage) {
+function renderSidebar(p) {
+  const sidebarDday = getDaysUntil(p.date, todayStr);
+  const navigation = [
+    ['home', 'HOME'], ['performance', '공연 정보'], ['production', '제작 현황'], ['tasks', '전체 업무'], ['preshow', '공연 전 체크'],
+  ];
   return `
-  <header class="masthead">
-    <div class="masthead-main">
-      <h1 id="show-title">${escapeHtml(p.title) || '(작품명 미입력)'}</h1>
-      <div class="sub">전대극회 · 공연 제작 기록</div>
+  <aside class="dashboard-sidebar ${isSidebarOpen ? 'is-open' : ''}" aria-label="공연 제작 메뉴">
+    <div class="sidebar-identity">
+      <span>JEONDAE THEATRE</span>
+      <strong>${escapeHtml(p.title) || '(작품명 미입력)'}</strong>
+      <small>PRODUCTION DESK / ACT II</small>
     </div>
-    <div class="masthead-meta">
+    <div class="sidebar-status" aria-label="공연 상태"><span>● 제작 ${escapeHtml(p.status || '준비중')}</span><strong>공연 ${formatDday(sidebarDday)}</strong></div>
+    <nav class="sidebar-nav" aria-label="페이지 탐색">
+      ${navigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${currentView === view ? 'is-active' : ''}">${label}</button>`).join('')}
+    </nav>
+    <div class="sidebar-parts">
+      <span class="sidebar-label">PARTS</span>
+      ${p.parts.map(part => `<button type="button" data-sidebar-part="${attr(part)}">${escapeHtml(part)}</button>`).join('')}
+    </div>
+    <div class="sidebar-footer"><button type="button" data-new-task>+ 새 업무 추가</button><p class="sidebar-archive"><span>ARCHIVE NOTE</span>이 데이터는 현재 브라우저에만 저장됩니다.</p></div>
+  </aside>`;
+}
+
+function renderCurrentView(p, dDay, stage, risks) {
+  if (currentView === 'performance') return renderPerformanceForm(p, true);
+  if (currentView === 'production') return renderDashboard(p, stage) + renderRisks(risks);
+  if (currentView === 'tasks') return renderTaskForm(p) + renderTaskTable(p);
+  if (currentView === 'preshow') return renderPreShowChecklist();
+  return renderHomeDashboard(p, dDay, stage, risks);
+}
+
+function renderHeader(p, dDay, stage) {
+  const stageText = stage
+    ? (stage.index >= 0 ? `제작 ${stage.index + 1}단계 · ${stage.name}` : stage.name)
+    : '미정';
+  return `
+  <header class="masthead home-project-header" aria-label="공연 제작 데스크 개요">
+    <div class="masthead-main">
+      <div class="masthead-kicker"><span>JEONDAE THEATRE</span><span class="accent">/</span><span>PRODUCTION DESK</span></div>
+      <h1 id="show-title">${escapeHtml(p.title) || '(작품명 미입력)'}</h1>
+      <div class="sub">${escapeHtml(p.venue) || '공연장 미정'} · ${formatDisplayDate(p.date) || '공연일 미정'} · 제작 ${escapeHtml(p.status || '준비중')}</div>
+    </div>
+    <div class="masthead-meta" aria-label="공연 일정">
+      <span class="meta-label">PERFORMANCE</span>
       <span class="dday">${formatDday(dDay)}</span>
-      <span class="stage-label">${stage ? stage.name : '공연일 미입력'}</span>
+      <span class="performance-date">${formatDisplayDate(p.date) || 'DATE TBA'}</span>
+      <div class="production-status">
+        <span class="stage-label">${stageText}</span>
+        <span class="current-status">● 제작 ${escapeHtml(p.status || '준비중')}</span>
+      </div>
       <div class="save-bar">
         <span id="save-status" class="save-status"></span>
       </div>
     </div>
   </header>
-  <p class="note">이 데이터는 이 브라우저에만 저장됩니다(localStorage). 다른 기기·다른 사람과 공유하려면 data/performance.json, data/tasks.json 파일을 직접 갱신해 GitHub에 커밋하세요.</p>
   `;
 }
 
-function renderPerformanceForm(p) {
+function renderPerformanceForm(p, forceEditorOpen = false) {
+  const summaryItems = [
+    ['작품', p.title || '미입력'],
+    ['공연일', formatDisplayDate(p.date) || '미정'],
+    ['공연장', p.venue || '미입력'],
+    ['시작일', formatDisplayDate(p.projectStartDate) || '미정'],
+    ['상태', p.status || '준비중'],
+  ];
   return `
-  <section class="section" id="section-setup">
-    <h2><span class="n">01</span>공연 기본정보</h2>
+  <section class="section section-performance" id="section-setup">
+    <div class="section-heading"><span class="act-label">ACT 01</span><span class="section-caption">PERFORMANCE</span><h2><span class="n">01</span>공연 기본정보</h2></div>
+    <div class="performance-summary ${(isPerformanceEditorOpen || forceEditorOpen) ? 'is-hidden' : ''}">
+      <dl>
+        ${summaryItems.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}
+      </dl>
+      <button type="button" data-toggle-performance-editor class="editor-toggle">정보 수정</button>
+    </div>
+    <div class="performance-editor ${(isPerformanceEditorOpen || forceEditorOpen) ? '' : 'is-hidden'}">
+    <div class="editor-actions"><span>EDITING PRODUCTION SHEET</span>${forceEditorOpen ? '' : '<button type="button" data-toggle-performance-editor class="small ghost">닫기</button>'}</div>
     <div class="grid2">
       <div class="field"><label for="f-title">작품명</label><input type="text" id="f-title" value="${attr(p.title)}"></div>
       <div class="field"><label for="f-date">공연일</label><input type="date" id="f-date" value="${attr(p.date)}"></div>
@@ -172,7 +232,7 @@ function renderPerformanceForm(p) {
     </div>
 
     <div class="field">
-      <label>제작 파트</label>
+      <label>제작 파트 <span class="field-translation">/ PRODUCTION UNITS</span></label>
       <div class="chip-row">
         ${p.parts.map(part => `<span class="chip">${escapeHtml(part)} <button type="button" data-remove-part="${attr(part)}">×</button></span>`).join('')}
       </div>
@@ -182,9 +242,11 @@ function renderPerformanceForm(p) {
       </div>
     </div>
 
-    <div class="field">
+    <div class="field participant-field">
+      <div class="subsection-heading"><span>CAST & CREW /</span><span>참여 인원</span></div>
       <label>참여 인원</label>
       ${p.participants.length ? `
+      <div class="table-scroll">
       <table>
         <thead><tr><th>이름</th><th>역할(파트)</th><th></th></tr></thead>
         <tbody>
@@ -195,24 +257,37 @@ function renderPerformanceForm(p) {
               <td><button type="button" class="small danger" data-remove-person="${i}">삭제</button></td>
             </tr>`).join('')}
         </tbody>
-      </table>` : `<div class="empty">등록된 참여 인원이 없습니다.</div>`}
+      </table>
+      </div>` : `<div class="empty">등록된 참여 인원이 없습니다.</div>`}
       <div class="row" style="margin-top:8px;">
         <input type="text" id="p-name" placeholder="이름">
         <select id="p-part">${p.parts.map(part => `<option>${escapeHtml(part)}</option>`).join('')}</select>
         <button type="button" id="add-person" style="flex:0 0 auto;">추가</button>
       </div>
     </div>
+    </div>
   </section>
   `;
 }
 
 function renderRisks(risks) {
+  const hasCritical = risks.some(r => r.level === '오류');
   return `
-  <section class="section" id="section-risks">
-    <h2><span class="n">!</span>검수 결과 <span class="count">(${risks.length})</span></h2>
-    ${risks.length ? risks.map(r => `
-      <div class="risk ${r.level}"><span class="tag">${r.level}</span><span>${escapeHtml(r.message)}</span></div>
-    `).join('') : `<div class="empty">현재 감지된 위험 항목이 없습니다.</div>`}
+  <section class="section section-check" id="section-risks">
+    <div class="section-heading"><span class="act-label">ACT 02</span><span class="section-caption">PRODUCTION CHECK</span><h2><span class="n">02${hasCritical ? ' !' : ''}</span>제작 검수 노트 <span class="count">(${risks.length})</span></h2></div>
+    <div class="check-intro"><span class="check-number">${String(risks.length).padStart(2, '0')}</span><span>${risks.length ? 'ISSUES FOUND' : 'READY FOR THE NEXT CUE'}</span></div>
+    <div class="validation-list">
+    ${risks.length ? risks.map(r => {
+      const isCritical = r.level === '오류';
+      return `<div class="validation-row ${isCritical ? 'critical' : 'warning'}">
+        <span class="validation-symbol">${isCritical ? '!' : '△'}</span>
+        <span class="validation-label">${isCritical ? 'CRITICAL' : 'WARNING'}</span>
+        <span class="validation-message">${escapeHtml(r.message)}</span>
+      </div>`;
+    }).join('') : `<div class="validation-row clear">
+      <span class="validation-symbol">✓</span><span class="validation-label">CLEAR</span><span class="validation-message">현재 감지된 위험 항목이 없습니다.</span>
+    </div>`}
+    </div>
   </section>
   `;
 }
@@ -220,8 +295,11 @@ function renderRisks(risks) {
 function renderTaskForm(p) {
   const names = p.participants.map(x => x.name);
   return `
-  <section class="section" id="section-task-form">
-    <h2><span class="n">02</span>업무 추가</h2>
+  <section class="section section-tasks" id="section-task-form">
+    <div class="section-heading"><span class="act-label">ACT 04</span><span class="section-caption">TASKS / NEW CALL</span><h2><span class="n">04</span>업무 추가</h2></div>
+    <button type="button" data-toggle-task-form class="task-form-toggle ${isTaskFormOpen ? 'is-hidden' : ''}">+ 새 업무 추가</button>
+    <div class="task-form-panel ${isTaskFormOpen ? '' : 'is-hidden'}">
+    <div class="editor-actions"><span>NEW PRODUCTION CALL</span><button type="button" data-toggle-task-form class="small ghost">닫기</button></div>
     <div class="grid3">
       <div class="field"><label for="t-part">담당 파트</label><select id="t-part">${p.parts.map(part => `<option>${escapeHtml(part)}</option>`).join('')}</select></div>
       <div class="field"><label for="t-name">업무명</label><input type="text" id="t-name" placeholder="예: 오르골 소품 제작"></div>
@@ -244,6 +322,7 @@ function renderTaskForm(p) {
       <label class="check-inline"><input type="checkbox" id="t-preshow"> 공연 전 체크리스트에 포함</label>
     </div>
     <button type="button" id="add-task">업무 추가</button>
+    </div>
   </section>
   `;
 }
@@ -252,67 +331,117 @@ function renderTaskTable(p) {
   const parts = ['전체', ...p.parts];
   const filtered = currentPartFilter === '전체' ? state.tasks : state.tasks.filter(t => t.part === currentPartFilter);
   return `
-  <section class="section" id="section-tasks">
-    <h2><span class="n">03</span>전체 업무 <span class="count">(${state.tasks.length})</span></h2>
+  <section class="section task-ledger" id="section-tasks">
+    <h2 class="table-section-title"><span class="table-section-label">PRODUCTION CALL SHEET</span>전체 업무 <span class="count">(${state.tasks.length})</span></h2>
     <div class="chip-row" style="margin-bottom:12px;">
       ${parts.map(part => `<button type="button" class="small ${currentPartFilter === part ? '' : 'ghost'}" data-filter-part="${attr(part)}">${escapeHtml(part)}</button>`).join('')}
     </div>
     ${filtered.length ? `
+    <div class="table-scroll">
     <table>
-      <thead><tr><th>ID</th><th>파트</th><th>업무명</th><th>담당자</th><th>마감일</th><th>선행업무</th><th>우선순위</th><th>필수</th><th>체크리스트</th><th>상태</th><th></th></tr></thead>
+      <thead><tr><th>업무명</th><th>담당 파트</th><th>담당자</th><th>마감일</th><th>상태</th><th>우선순위</th><th>선행업무</th><th>필수</th><th>체크리스트</th><th>ID</th><th></th></tr></thead>
       <tbody>
         ${filtered.map(t => {
           const prereq = getPrereqTask(t, state.tasks);
           return `
           <tr>
-            <td class="mono">${t.taskId}</td>
-            <td>${escapeHtml(t.part)}</td>
             <td>${escapeHtml(t.name)}</td>
+            <td>${escapeHtml(t.part)}</td>
             <td>${t.assignee ? escapeHtml(t.assignee) : '<span class="text-faint">미지정</span>'}</td>
             <td class="mono">${t.deadline || '—'}</td>
-            <td class="text-faint">${prereq ? escapeHtml(prereq.name) : '—'}</td>
-            <td><span class="badge ${t.priority}">${t.priority}</span></td>
-            <td>${t.required ? '✓' : '—'}</td>
-            <td>${t.preShowCheck ? '✓' : '—'}</td>
             <td>
               <select data-status="${attr(t.taskId)}" class="mono-select">
                 ${TASK_STATUS.map(s => `<option ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
               </select>
             </td>
+            <td><span class="badge ${t.priority}">${t.priority}</span></td>
+            <td class="text-faint">${prereq ? escapeHtml(prereq.name) : '—'}</td>
+            <td>${t.required ? '✓' : '—'}</td>
+            <td>${t.preShowCheck ? '✓' : '—'}</td>
+            <td class="mono">${t.taskId}</td>
             <td><button type="button" class="small danger" data-del-task="${attr(t.taskId)}">삭제</button></td>
           </tr>`;
         }).join('')}
       </tbody>
-    </table>` : `<div class="empty">${currentPartFilter === '전체' ? '등록된 업무가 없습니다.' : `'${escapeHtml(currentPartFilter)}' 파트에 등록된 업무가 없습니다.`}</div>`}
+    </table>
+    </div>` : `<div class="empty">${currentPartFilter === '전체' ? '등록된 업무가 없습니다.' : `'${escapeHtml(currentPartFilter)}' 파트에 등록된 업무가 없습니다.`}</div>`}
   </section>
   `;
 }
 
-function renderDashboard(p, stage) {
+function getDashboardData(p, stage) {
   const thisWeek = state.tasks.filter(t => {
     if (t.status === '완료' || !t.deadline) return false;
     const dd = getDaysUntil(t.deadline, todayStr);
     return dd !== null && dd >= 0 && dd <= 7;
   }).sort((a, b) => a.deadline.localeCompare(b.deadline));
-
   const upcoming = state.tasks.filter(t => t.deadline && t.status !== '완료')
-    .sort((a, b) => a.deadline.localeCompare(b.deadline)).slice(0, 6);
-
+    .sort((a, b) => a.deadline.localeCompare(b.deadline));
   const incomplete = state.tasks.filter(t => t.status !== '완료');
-
+  const completedCount = state.tasks.length - incomplete.length;
+  const stageNumber = stage && stage.index >= 0 ? String(stage.index + 1).padStart(2, '0') : '—';
   const byPart = {};
   p.parts.forEach(part => { byPart[part] = { total: 0, done: 0 }; });
   state.tasks.forEach(t => { if (byPart[t.part]) { byPart[t.part].total++; if (t.status === '완료') byPart[t.part].done++; } });
+  return { thisWeek, upcoming, incomplete, completedCount, stageNumber, byPart };
+}
+
+function renderPartStatus(byPart) {
+  return Object.entries(byPart).map(([part, v]) => {
+    const percent = v.total ? Math.round((v.done / v.total) * 100) : 0;
+    return `<div class="check-item part-progress"><span class="part-name">${escapeHtml(part)}</span><span class="mono text-dim">${v.done} / ${v.total}</span><span class="progress-track" aria-hidden="true"><span class="progress-value" style="width:${percent}%"></span></span><span class="part-percent">${percent}%</span></div>`;
+  }).join('');
+}
+
+function renderHomeDashboard(p, dDay, stage, risks) {
+  const data = getDashboardData(p, stage);
+  const todayTasks = data.incomplete.filter(t => t.deadline === todayStr);
+  const important = data.incomplete.slice().sort((a, b) => {
+    if (Boolean(a.required) !== Boolean(b.required)) return a.required ? -1 : 1;
+    if ((a.priority === '높음') !== (b.priority === '높음')) return a.priority === '높음' ? -1 : 1;
+    return (a.deadline || '9999-12-31').localeCompare(b.deadline || '9999-12-31');
+  });
+  return `
+    ${renderHeader(p, dDay, stage)}
+    <section class="section home-kpi" id="home">
+      <div class="section-heading"><span class="act-label">HOME</span><span class="section-caption">PRODUCTION CONTROL ROOM</span><h2>오늘의 제작 상황</h2></div>
+      <div class="stat-cards">
+        <div class="stat"><div class="val">${state.tasks.length}</div><div class="lbl">전체 업무</div></div>
+        <div class="stat"><div class="val">${data.incomplete.length}</div><div class="lbl">미완료 업무</div></div>
+        <div class="stat"><div class="val">${data.thisWeek.length}</div><div class="lbl">이번 주 업무</div></div>
+        <div class="stat"><div class="val">${formatDday(dDay)}</div><div class="lbl">공연</div></div>
+      </div>
+    </section>
+    <section class="section home-lists">
+      <div class="grid2">
+        <div><h3>오늘 할 일</h3>${renderHomeTaskList(todayTasks.slice(0, 6), '오늘 마감인 업무가 없습니다.', true)}</div>
+        <div><h3>다가오는 마감</h3>${renderHomeTaskList(data.upcoming.slice(0, 6), '예정된 마감이 없습니다.')}</div>
+      </div>
+    </section>
+    <section class="section home-status">
+      <div class="grid2">
+        <div><h3>파트별 진행률</h3>${renderPartStatus(data.byPart)}</div>
+        <div><h3>미완료 중요 업무</h3>${renderHomeTaskList(important.slice(0, 6), '미완료 업무가 없습니다.')}</div>
+      </div>
+    </section>`;
+}
+
+function renderHomeTaskList(tasks, emptyMessage, showCheckbox = false) {
+  return tasks.length ? tasks.map(t => `<div class="home-task-row">${showCheckbox ? '<span class="task-checkbox" aria-hidden="true">□</span>' : ''}<span class="grow"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(t.part)} · ${t.assignee ? escapeHtml(t.assignee) : '미지정'}${t.required ? ' · 필수' : ''}</small></span><span class="mono">${t.deadline || '—'}</span><span class="badge ${t.priority}">${t.priority || ''}</span></div>`).join('') : `<div class="empty">${emptyMessage}</div>`;
+}
+
+function renderDashboard(p, stage) {
+  const { thisWeek, upcoming, incomplete, completedCount, stageNumber, byPart } = getDashboardData(p, stage);
 
   return `
-  <section class="section" id="section-dashboard">
-    <h2><span class="n">04</span>대시보드</h2>
+  <section class="section section-dashboard" id="section-dashboard">
+    <div class="section-heading"><span class="act-label">ACT 03</span><span class="section-caption">PRODUCTION OVERVIEW</span><h2><span class="n">03</span>제작 현황</h2></div>
 
     <div class="stat-cards">
-      <div class="stat"><div class="val">${state.tasks.length}</div><div class="lbl">전체 업무</div></div>
-      <div class="stat"><div class="val">${incomplete.length}</div><div class="lbl">미완료 업무</div></div>
-      <div class="stat"><div class="val">${thisWeek.length}</div><div class="lbl">이번 주 할 일</div></div>
-      <div class="stat"><div class="val">${stage ? stage.name.slice(0, 2) : '—'}</div><div class="lbl">${stage ? stage.name : '단계 미정'}</div></div>
+      <div class="stat"><div class="val">${state.tasks.length}</div><div><div class="lbl">전체 업무</div><div class="stat-detail">${state.tasks.length ? `완료 ${completedCount}건` : '등록된 업무 없음'}</div></div></div>
+      <div class="stat"><div class="val">${incomplete.length}</div><div><div class="lbl">미완료 업무</div><div class="stat-detail">${incomplete.length ? '처리 필요 업무' : '대기 업무 없음'}</div></div></div>
+      <div class="stat"><div class="val">${thisWeek.length}</div><div><div class="lbl">이번 주 할 일</div><div class="stat-detail">${thisWeek.length ? '7일 내 마감' : '예정 업무 없음'}</div></div></div>
+      <div class="stat"><div class="val">${stageNumber}</div><div><div class="lbl">현재 단계</div><div class="stat-detail">${stage ? stage.name : '단계 미정'}</div></div></div>
     </div>
 
     <div class="grid2">
@@ -333,9 +462,7 @@ function renderDashboard(p, stage) {
     <div class="grid2">
       <div>
         <h3>파트별 업무 현황</h3>
-        ${Object.entries(byPart).map(([part, v]) => `
-          <div class="check-item"><span style="width:70px;">${escapeHtml(part)}</span><span class="mono text-dim">${v.done}/${v.total} 완료</span></div>
-        `).join('')}
+        ${renderPartStatus(byPart)}
       </div>
       <div>
         <h3>미완료 업무 (${incomplete.length})</h3>
@@ -352,8 +479,8 @@ function renderPreShowChecklist() {
   const items = state.tasks.filter(t => t.preShowCheck);
   const done = items.filter(t => t.status === '완료').length;
   return `
-  <section class="section" id="section-checklist">
-    <h2><span class="n">05</span>공연 전 체크리스트 <span class="count">(${done}/${items.length})</span></h2>
+  <section class="section section-preshow" id="section-checklist">
+    <div class="section-heading"><span class="act-label">ACT 05</span><span class="section-caption">PRE-SHOW / HOUSE OPEN</span><h2><span class="n">05</span>공연 전 체크 <span class="count">(${done}/${items.length})</span></h2></div>
     <p class="note">업무 추가 시 "공연 전 체크리스트에 포함"을 체크한 업무만 여기 표시됩니다.</p>
     ${items.length ? items.map(t => `
       <div class="check-item ${t.status === '완료' ? 'checked' : ''}">
@@ -366,10 +493,39 @@ function renderPreShowChecklist() {
   `;
 }
 
+function renderFooter() {
+  return `
+  <footer class="site-footer">
+    <div class="site-footer-identity">JEONDAE THEATRE <span>/</span> ACT II</div>
+    <div class="site-footer-meta">PRODUCTION ARCHIVE · LOCAL FIRST · REV. 01</div>
+  </footer>
+  `;
+}
+
 /* ---------------- 이벤트 바인딩 ---------------- */
 
 function bindEvents() {
   const p = state.performance;
+
+  document.querySelectorAll('[data-view]').forEach(btn => {
+    btn.onclick = () => { currentView = btn.dataset.view; isSidebarOpen = false; render(); };
+  });
+  document.querySelectorAll('[data-sidebar-part]').forEach(btn => {
+    btn.onclick = () => { currentPartFilter = btn.dataset.sidebarPart; currentView = 'tasks'; isSidebarOpen = false; render(); };
+  });
+  document.querySelectorAll('[data-new-task]').forEach(btn => {
+    btn.onclick = () => { currentView = 'tasks'; isTaskFormOpen = true; isSidebarOpen = false; render(); };
+  });
+  document.querySelectorAll('[data-toggle-sidebar]').forEach(btn => {
+    btn.onclick = () => { isSidebarOpen = !isSidebarOpen; render(); };
+  });
+
+  document.querySelectorAll('[data-toggle-performance-editor]').forEach(btn => {
+    btn.onclick = () => { isPerformanceEditorOpen = !isPerformanceEditorOpen; render(); };
+  });
+  document.querySelectorAll('[data-toggle-task-form]').forEach(btn => {
+    btn.onclick = () => { isTaskFormOpen = !isTaskFormOpen; render(); };
+  });
 
   const ft = document.getElementById('f-title');
   if (ft) ft.onchange = e => { p.title = e.target.value; render(); saveState(); };
@@ -445,5 +601,10 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function attr(str) { return escapeHtml(str); }
+function formatDisplayDate(dateStr) {
+  if (!dateStr) return '';
+  const match = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[1]}. ${match[2]}. ${match[3]}.` : String(dateStr);
+}
 
 init();
