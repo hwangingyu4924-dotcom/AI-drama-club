@@ -64,8 +64,8 @@ function loadFromLocalStorage() {
 async function loadFromDataFiles() {
   try {
     const [perfRes, tasksRes] = await Promise.all([
-      fetch('./data/performance.json'),
-      fetch('./data/tasks.json'),
+      fetch('./performance.json'),
+      fetch('./tasks.json'),
     ]);
     if (perfRes.ok) {
       const perf = await perfRes.json();
