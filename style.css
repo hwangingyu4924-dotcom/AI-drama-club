@@ -1,0 +1,128 @@
+/**
+ * css/style.css
+ * 공연 제작 업무자동화 — 디자인 전담 스타일시트
+ * 팔레트: Off-White / Black / Editorial Red (전대극회 ACT II 디자인 시스템 기반)
+ */
+
+:root{
+  --bg: #F5F4F0;
+  --panel-2: #FFFFFF;
+  --border: rgba(17,17,17,0.14);
+  --border-strong: rgba(17,17,17,0.9);
+  --text: #111111;
+  --text-dim: rgba(17,17,17,0.62);
+  --text-faint: rgba(17,17,17,0.38);
+  --red: #B21F24;
+  --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Malgun Gothic', 'Apple SD Gothic Neo', 'Pretendard', sans-serif;
+  --serif: Georgia, 'Nanum Myeongjo', serif;
+}
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--sans); font-size:14px; line-height:1.55;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:36px 22px 100px;}
+
+/* ---- 헤더(masthead) ---- */
+.masthead{
+  display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding-bottom:20px; border-bottom:1px solid var(--border-strong); margin-bottom:6px;
+}
+.masthead h1{font-family:var(--sans); font-weight:800; font-size:26px; margin:0; letter-spacing:-0.02em;}
+.masthead .sub{font-family:var(--serif); font-style:italic; font-size:12px; color:var(--text-dim); margin-top:4px;}
+.masthead-meta{text-align:right;}
+.dday{display:block; font-family:var(--sans); font-weight:800; font-size:32px; color:var(--red); letter-spacing:-0.02em; line-height:1;}
+.stage-label{font-family:var(--mono); font-size:11px; color:var(--text-dim);}
+.save-bar{margin-top:8px;}
+.save-status{font-family:var(--mono); font-size:10px; color:var(--text-faint);}
+
+/* ---- 섹션 (카드 대신 얇은 구분선) ---- */
+.section{padding:26px 0; border-top:1px solid var(--border);}
+.section h2{font-family:var(--sans); font-weight:800; font-size:15px; margin:0 0 16px; letter-spacing:-0.01em;}
+.section h2 .n{color:var(--red); font-family:var(--mono); font-size:11px; margin-right:10px; font-weight:400;}
+.section h2 .count{color:var(--text-faint); font-family:var(--mono); font-size:11px; font-weight:400; margin-left:6px;}
+.section h3{font-family:var(--sans); font-weight:700; font-size:12.5px; margin:0 0 10px; color:var(--text-dim);}
+
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:24px;}
+.grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;}
+@media (max-width:760px){.grid2,.grid3{grid-template-columns:1fr;}}
+
+/* ---- 폼 ---- */
+label{display:block; font-size:10.5px; color:var(--text-faint); margin-bottom:5px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.5px;}
+.check-inline{display:flex; align-items:center; gap:6px; font-family:var(--sans); text-transform:none; letter-spacing:0; font-size:13px; color:var(--text-dim); margin-right:18px;}
+.check-inline input{accent-color:var(--red);}
+input[type=text], input[type=date], select{
+  width:100%; background:var(--panel-2); border:1px solid var(--border); color:var(--text);
+  padding:9px 10px; border-radius:0; font-size:13px; font-family:var(--sans);
+}
+input:focus, select:focus{outline:none; border-color:var(--red);}
+.field{margin-bottom:12px;}
+.row{display:flex; gap:8px; align-items:flex-end;}
+.row > *{flex:1;}
+
+button{
+  background:none; color:var(--text); border:1px solid var(--border-strong);
+  padding:9px 16px; border-radius:0; font-size:12px; cursor:pointer; font-family:var(--mono);
+  letter-spacing:.4px; text-transform:uppercase;
+}
+button:hover{background:var(--text); color:var(--bg);}
+button.ghost{color:var(--text-faint); border-color:var(--border);}
+button.ghost:hover{color:var(--text); background:none; border-color:var(--border-strong);}
+button.small{padding:5px 10px; font-size:10.5px;}
+button.danger{border-color:var(--red); color:var(--red); background:none;}
+button.danger:hover{background:var(--red); color:#fff; border-color:var(--red);}
+
+.chip-row{display:flex; flex-wrap:wrap; gap:6px;}
+.chip{display:flex; align-items:center; gap:7px; border:1px solid var(--border); padding:5px 10px; font-size:11.5px; font-family:var(--mono);}
+.chip button{padding:0; background:none; border:none; color:var(--text-faint); font-size:13px; line-height:1;}
+.chip button:hover{color:var(--red); background:none;}
+
+/* ---- 표 ---- */
+table{width:100%; border-collapse:collapse; font-size:12.5px;}
+th{text-align:left; font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--text-faint); padding:9px 8px; border-bottom:1px solid var(--border-strong);}
+td{padding:10px 8px; border-bottom:1px solid var(--border); vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+.mono{font-family:var(--mono);}
+.mono-select{width:auto; padding:5px 6px; font-size:11px;}
+.text-dim{color:var(--text-dim);}
+.text-faint{color:var(--text-faint);}
+.accent{color:var(--red);}
+
+/* ---- 상태 배지 (진행상태 / 우선순위 공통) ---- */
+.badge{display:inline-block; font-size:10.5px; font-family:var(--mono); letter-spacing:.3px;}
+.badge.대기{color:var(--text-faint);}
+.badge.대기::before,.badge.대기::after{content:'';}
+.badge.진행중{color:var(--text); font-weight:700;}
+.badge.완료{color:var(--text-faint); text-decoration:line-through;}
+.badge.보류{color:var(--red);}
+.badge.대기::before,.badge.진행중::before,.badge.완료::before,.badge.보류::before{content:'[ ';}
+.badge.대기::after,.badge.진행중::after,.badge.완료::after,.badge.보류::after{content:' ]';}
+.badge.높음{color:var(--red); font-weight:700;}
+.badge.보통{color:var(--text-dim);}
+.badge.낮음{color:var(--text-faint);}
+.tag-required{font-family:var(--mono); font-size:9.5px; color:var(--red); border:1px solid var(--red); padding:1px 6px; margin-left:6px;}
+
+.empty{color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:12.5px; padding:20px 4px; text-align:center; border:1px dashed var(--border);}
+
+/* ---- 검수 위험 목록 ---- */
+.risk{display:flex; gap:10px; align-items:flex-start; padding:9px 0 9px 12px; font-size:12.5px; border-left:2px solid var(--border); border-bottom:1px solid var(--border);}
+.risk.오류{border-left-color:var(--red); color:var(--text);}
+.risk.경고{border-left-color:var(--border-strong); color:var(--text-dim);}
+.risk .tag{font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; flex-shrink:0; color:var(--text-faint);}
+.risk.오류 .tag{color:var(--red); font-weight:700;}
+
+/* ---- 대시보드 통계 카드 ---- */
+.stat-cards{display:grid; grid-template-columns:repeat(4,1fr); gap:20px; margin-bottom:20px; padding-bottom:24px; border-bottom:1px solid var(--border);}
+@media (max-width:760px){.stat-cards{grid-template-columns:1fr 1fr;}}
+.stat .val{font-family:var(--sans); font-size:28px; font-weight:800; letter-spacing:-0.02em;}
+.stat .lbl{font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:.4px; color:var(--text-faint); margin-top:4px;}
+
+/* ---- 체크 항목 리스트 (이번주 할일 / 체크리스트 등) ---- */
+.check-item{display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid var(--border); font-size:13px;}
+.check-item:last-child{border-bottom:none;}
+.check-item .grow{flex:1;}
+.check-item.checked span{color:var(--text-faint);}
+
+.note{font-family:var(--serif); font-style:italic; font-size:11.5px; color:var(--text-faint); margin:10px 0 0; line-height:1.6;}
+::placeholder{color:var(--text-faint);}
