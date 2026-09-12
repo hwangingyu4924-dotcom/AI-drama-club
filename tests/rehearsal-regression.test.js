@@ -28,14 +28,24 @@ const rules = fs.readFileSync('rules.js', 'utf8');
 const app = fs.readFileSync('app.js', 'utf8');
 const assertions = `
   if (!appRoot.innerHTML.includes('data-view="rehearsal"')) throw new Error('연습일지 내비게이션 누락');
+  if (!appRoot.innerHTML.includes('class="top-shell-header"')) throw new Error('Top Navigation Shell 누락');
+  if (!appRoot.innerHTML.includes('class="top-shell-wordmark" data-view="home">전대극회</button>')) throw new Error('한글 로고 누락');
+  if (!appRoot.innerHTML.includes('data-topnav-toggle')) throw new Error('모바일 메뉴 토글 누락');
+  if (!appRoot.innerHTML.includes('class="top-shell-new-task"')) throw new Error('Top Navigation 새 업무 CTA 누락');
+  if (appRoot.innerHTML.includes('dashboard-sidebar') || appRoot.innerHTML.includes('sidebar-parts')) throw new Error('기존 Sidebar Shell 잔존');
   if (!appRoot.innerHTML.includes('class="motion-hero"')) throw new Error('HOME Cinematic Hero 누락');
   if (!appRoot.innerHTML.includes('id="motion-hero-video"')) throw new Error('Hero 영상 누락');
   if (!appRoot.innerHTML.includes('data-hero-dashboard')) throw new Error('Hero CTA 누락');
   if (appRoot.innerHTML.indexOf('class="motion-hero"') > appRoot.innerHTML.indexOf('id="home-dashboard"')) throw new Error('Hero와 기존 Dashboard 배치 오류');
-  for (const view of ['home', 'performance', 'production', 'tasks', 'calendar', 'preshow']) {
+  for (const view of ['home', 'performance', 'production', 'tasks', 'calendar', 'rehearsal', 'preshow']) {
     currentView = view;
-    if (!renderCurrentView(state.performance, 10, getStage(10), []).trim()) throw new Error(view + ' 기존 화면 렌더 실패');
+    const renderedView = renderCurrentView(state.performance, 10, getStage(10), []);
+    if (!renderedView.trim()) throw new Error(view + ' 기존 화면 렌더 실패');
+    if (view !== 'home' && !renderedView.includes('class="view-page-header"')) throw new Error(view + ' 공통 Page Header 누락');
   }
+  currentPartFilter = '전체';
+  const taskView = renderTaskTable(state.performance);
+  if (!taskView.includes('data-filter-part="전체"') || !taskView.includes('data-filter-part="연출"')) throw new Error('전체 업무 PARTS 필터 누락');
   rehearsalLogs = [
     { id: 'LOG-001', title: '첫 연습', author: '홍길동', date: '2026-09-01', category: '연기', content: '장면 연습', tags: ['장면1'], createdAt: '2026-09-01T10:00:00', updatedAt: '2026-09-01T10:00:00' },
     { id: 'LOG-002', title: '전체 런', author: '김연출', date: '2026-09-10', category: '전체연습', content: '처음부터 끝까지', tags: ['런스루'], createdAt: '2026-09-10T10:00:00', updatedAt: '2026-09-10T10:00:00' },

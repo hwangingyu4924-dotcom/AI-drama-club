@@ -37,7 +37,7 @@ let currentPartFilter = '전체';
 let isPerformanceEditorOpen = false;
 let isTaskFormOpen = false;
 let currentView = 'home';
-let isSidebarOpen = false;
+let isTopNavOpen = false;
 let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let selectedCalendarDate = todayStr;
 let isEventFormOpen = false;
@@ -173,10 +173,9 @@ function render() {
   const risks = computeRisks(p, state.tasks, todayStr);
 
   root.innerHTML = `
-    <div class="dashboard-shell">
-      <button type="button" class="mobile-menu-toggle" data-toggle-sidebar aria-label="메뉴 열기">MENU</button>
-      ${renderSidebar(p)}
-      <main class="dashboard-main">
+    <div class="app-shell">
+      ${renderTopNavigation()}
+      <main class="app-main">
         ${renderCurrentView(p, dDay, stage, risks)}
         ${renderFooter()}
       </main>
@@ -187,38 +186,49 @@ function render() {
   if (currentView === 'home') initHeroVideoLoop();
 }
 
-function renderSidebar(p) {
-  const sidebarDday = getDaysUntil(p.date, todayStr);
+function renderTopNavigation() {
   const navigation = [
     ['home', 'HOME'], ['performance', '공연 정보'], ['production', '제작 현황'], ['tasks', '전체 업무'], ['calendar', '일정'], ['rehearsal', '연습일지'], ['preshow', '공연 전 체크'],
   ];
-  return `
-  <aside class="dashboard-sidebar ${isSidebarOpen ? 'is-open' : ''}" aria-label="공연 제작 메뉴">
-    <div class="sidebar-identity">
-      <span>JEONDAE THEATRE</span>
-      <strong>${escapeHtml(p.title) || '(작품명 미입력)'}</strong>
-      <small>PRODUCTION DESK / ACT II</small>
+  return `<header class="top-shell-header">
+    <div class="top-shell-nav-wrap">
+      <button type="button" class="top-shell-wordmark" data-view="home">전대극회</button>
+      <button type="button" class="top-shell-menu-toggle" data-topnav-toggle aria-expanded="${isTopNavOpen}" aria-controls="top-shell-navigation"><span>MENU</span><i aria-hidden="true"></i></button>
+      <nav id="top-shell-navigation" class="top-shell-navigation ${isTopNavOpen ? 'is-open' : ''}" aria-label="주요 메뉴">
+        ${navigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${currentView === view ? 'is-active' : ''}" ${currentView === view ? 'aria-current="page"' : ''}>${label}</button>`).join('')}
+      </nav>
+      <button type="button" class="top-shell-new-task" data-new-task>+ 새 업무</button>
     </div>
-    <div class="sidebar-status" aria-label="공연 상태"><span>● 제작 ${escapeHtml(p.status || '준비중')}</span><strong>공연 ${formatDday(sidebarDday)}</strong></div>
-    <nav class="sidebar-nav" aria-label="페이지 탐색">
-      ${navigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${currentView === view ? 'is-active' : ''}">${label}</button>`).join('')}
-    </nav>
-    <div class="sidebar-parts">
-      <span class="sidebar-label">PARTS</span>
-      ${p.parts.map(part => `<button type="button" data-sidebar-part="${attr(part)}">${escapeHtml(part)}</button>`).join('')}
-    </div>
-    <div class="sidebar-footer"><button type="button" data-new-task>+ 새 업무 추가</button><p class="sidebar-archive"><span>ARCHIVE NOTE</span>이 데이터는 현재 브라우저에만 저장됩니다.</p></div>
-  </aside>`;
+  </header>`;
 }
 
 function renderCurrentView(p, dDay, stage, risks) {
-  if (currentView === 'performance') return renderPerformanceForm(p, true);
-  if (currentView === 'production') return renderDashboard(p, stage) + renderRisks(risks);
-  if (currentView === 'tasks') return renderTaskForm(p) + renderTaskTable(p);
-  if (currentView === 'calendar') return renderCalendar(p);
-  if (currentView === 'rehearsal') return renderRehearsalArchive(p);
-  if (currentView === 'preshow') return renderPreShowChecklist();
+  if (currentView === 'performance') return renderViewPage('performance', renderPerformanceForm(p, true));
+  if (currentView === 'production') return renderViewPage('production', renderDashboard(p, stage) + renderRisks(risks));
+  if (currentView === 'tasks') return renderViewPage('tasks', renderTaskForm(p) + renderTaskTable(p));
+  if (currentView === 'calendar') return renderViewPage('calendar', renderCalendar(p));
+  if (currentView === 'rehearsal') return renderViewPage('rehearsal', renderRehearsalArchive(p));
+  if (currentView === 'preshow') return renderViewPage('preshow', renderPreShowChecklist());
   return renderHomeDashboard(p, dDay, stage, risks);
+}
+
+function renderViewPage(view, content) {
+  const headers = {
+    performance: ['ACT 01', 'PERFORMANCE', '공연 기본정보'],
+    production: ['ACT 02', 'PRODUCTION', '제작 현황'],
+    tasks: ['ACT 03', 'TASKS', '전체 업무'],
+    calendar: ['ACT 04', 'CALENDAR', '일정'],
+    rehearsal: ['ACT 05', 'REHEARSAL ARCHIVE', '연습일지'],
+    preshow: ['ACT 06', 'PRE-SHOW', '공연 전 체크'],
+  };
+  const [act, label, title] = headers[view];
+  return `<div class="view-page view-page-${view}">
+    <header class="view-page-header">
+      <p><span>${act}</span><i aria-hidden="true">/</i>${label}</p>
+      <h1>${title}</h1>
+    </header>
+    <div class="view-page-content">${content}</div>
+  </div>`;
 }
 
 function renderHeader(p, dDay, stage) {
@@ -450,10 +460,6 @@ function renderPartStatus(byPart) {
 }
 
 function renderMotionHero(p, dDay) {
-  const heroNavigation = [
-    ['home', 'HOME'], ['performance', '공연 정보'], ['production', '제작 현황'],
-    ['tasks', '전체 업무'], ['calendar', '일정'], ['rehearsal', '연습일지'], ['preshow', '공연 전 체크'],
-  ];
   return `<section class="motion-hero" aria-labelledby="motion-hero-title">
     <div class="hero-video-stage" aria-hidden="true">
       <video id="motion-hero-video" class="motion-hero-video" muted playsinline preload="metadata" poster="">
@@ -462,11 +468,6 @@ function renderMotionHero(p, dDay) {
       <div class="hero-video-overlay"></div>
     </div>
     <div class="motion-hero-foreground">
-      <nav class="hero-nav fade-rise" aria-label="HOME 바로가기">
-        <button type="button" class="hero-wordmark" data-view="home">JEONDAE THEATRE<sup>®</sup></button>
-        <div class="hero-nav-links">${heroNavigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${view === 'home' ? 'is-active' : ''}">${label}</button>`).join('')}</div>
-        <button type="button" class="hero-quick-task" data-new-task>+ 새 업무</button>
-      </nav>
       <div class="motion-hero-copy">
         <span class="hero-production-label fade-rise">PERFORMANCE PRODUCTION / ${escapeHtml(p.status || '준비중')}</span>
         <h1 id="motion-hero-title" class="fade-rise-delay"><span>${escapeHtml(p.title) || '우리의 공연'}</span><em>무대에 오르기 전부터.</em></h1>
@@ -530,7 +531,6 @@ function renderHomeDashboard(p, dDay, stage, risks) {
   });
   return `
     ${renderMotionHero(p, dDay)}
-    ${renderHeader(p, dDay, stage)}
     <section class="section home-kpi" id="home-dashboard">
       <div class="section-heading"><span class="act-label">HOME</span><span class="section-caption">PRODUCTION CONTROL ROOM</span><h2>오늘의 제작 상황</h2></div>
       <div class="stat-cards">
@@ -853,16 +853,13 @@ function bindEvents() {
   const p = state.performance;
 
   document.querySelectorAll('[data-view]').forEach(btn => {
-    btn.onclick = () => { currentView = btn.dataset.view; isSidebarOpen = false; render(); };
-  });
-  document.querySelectorAll('[data-sidebar-part]').forEach(btn => {
-    btn.onclick = () => { currentPartFilter = btn.dataset.sidebarPart; currentView = 'tasks'; isSidebarOpen = false; render(); };
+    btn.onclick = () => { currentView = btn.dataset.view; isTopNavOpen = false; render(); };
   });
   document.querySelectorAll('[data-new-task]').forEach(btn => {
-    btn.onclick = () => { currentView = 'tasks'; isTaskFormOpen = true; isSidebarOpen = false; render(); };
+    btn.onclick = () => { currentView = 'tasks'; isTaskFormOpen = true; isTopNavOpen = false; render(); };
   });
-  document.querySelectorAll('[data-toggle-sidebar]').forEach(btn => {
-    btn.onclick = () => { isSidebarOpen = !isSidebarOpen; render(); };
+  document.querySelectorAll('[data-topnav-toggle]').forEach(btn => {
+    btn.onclick = () => { isTopNavOpen = !isTopNavOpen; render(); };
   });
 
   document.querySelectorAll('[data-toggle-performance-editor]').forEach(btn => {
