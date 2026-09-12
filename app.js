@@ -12,7 +12,9 @@
  */
 
 const LS_KEY = 'ppa-state-v1';
-const todayStr = new Date().toISOString().slice(0, 10);
+const REHEARSAL_LOGS_KEY = 'rehearsalLogs';
+const now = new Date();
+const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
 let state = {
   performance: {
@@ -28,6 +30,7 @@ let state = {
     rehearsalAvailability: '',
   },
   tasks: [],
+  events: [],
 };
 
 let currentPartFilter = '전체';
@@ -35,6 +38,20 @@ let isPerformanceEditorOpen = false;
 let isTaskFormOpen = false;
 let currentView = 'home';
 let isSidebarOpen = false;
+let calendarCursor = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+let selectedCalendarDate = todayStr;
+let isEventFormOpen = false;
+let editingEventId = null;
+let rehearsalLogs = [];
+let rehearsalArchiveMode = 'list';
+let selectedRehearsalLogId = null;
+let rehearsalCategoryFilter = '전체';
+let rehearsalSearchQuery = '';
+let heroVideoAnimationFrame = null;
+let heroVideoRestartTimer = null;
+
+const EVENT_TYPES = ['연습', '회의', '리딩', '공연', '설치/기술', '기타'];
+const REHEARSAL_CATEGORIES = ['전체연습', '연기', '연출', '무대', '회의', '기타'];
 
 /* ---------------- 데이터 로드 / 저장 ---------------- */
 
@@ -59,10 +76,29 @@ function loadFromLocalStorage() {
     const parsed = JSON.parse(raw);
     if (parsed && parsed.performance && Array.isArray(parsed.tasks)) {
       state = parsed;
+      if (!Array.isArray(state.events)) state.events = [];
       return true;
     }
   } catch (e) { /* 저장된 값이 손상된 경우 무시하고 초기값 사용 */ }
   return false;
+}
+
+function loadRehearsalLogs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(REHEARSAL_LOGS_KEY) || '[]');
+    rehearsalLogs = Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    rehearsalLogs = [];
+  }
+}
+
+function saveRehearsalLogs() {
+  try {
+    localStorage.setItem(REHEARSAL_LOGS_KEY, JSON.stringify(rehearsalLogs));
+    setSaveStatus('저장됨 · ' + new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
+  } catch (e) {
+    setSaveStatus('저장 실패 — 브라우저 저장공간을 확인하세요');
+  }
 }
 
 async function loadFromDataFiles() {
@@ -97,9 +133,25 @@ function nextTaskId() {
   return 'TASK-' + String(next).padStart(3, '0');
 }
 
+function nextEventId() {
+  const nums = state.events
+    .map(event => (String(event.id || '').match(/^EVENT-(\d+)$/) || [])[1])
+    .filter(Boolean)
+    .map(Number);
+  return 'EVENT-' + String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, '0');
+}
+
+function nextRehearsalLogId() {
+  const nums = rehearsalLogs
+    .map(log => (String(log.id || '').match(/^LOG-(\d+)$/) || [])[1])
+    .filter(Boolean).map(Number);
+  return 'LOG-' + String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, '0');
+}
+
 /* ---------------- 초기화 ---------------- */
 
 async function init() {
+  loadRehearsalLogs();
   const fromLocal = loadFromLocalStorage();
   if (!fromLocal) {
     const ok = await loadFromDataFiles();
@@ -113,6 +165,7 @@ async function init() {
 /* ---------------- 렌더링 ---------------- */
 
 function render() {
+  destroyHeroVideoLoop();
   const root = document.getElementById('app');
   const p = state.performance;
   const dDay = getDaysUntil(p.date, todayStr);
@@ -131,12 +184,13 @@ function render() {
   `;
 
   bindEvents();
+  if (currentView === 'home') initHeroVideoLoop();
 }
 
 function renderSidebar(p) {
   const sidebarDday = getDaysUntil(p.date, todayStr);
   const navigation = [
-    ['home', 'HOME'], ['performance', '공연 정보'], ['production', '제작 현황'], ['tasks', '전체 업무'], ['preshow', '공연 전 체크'],
+    ['home', 'HOME'], ['performance', '공연 정보'], ['production', '제작 현황'], ['tasks', '전체 업무'], ['calendar', '일정'], ['rehearsal', '연습일지'], ['preshow', '공연 전 체크'],
   ];
   return `
   <aside class="dashboard-sidebar ${isSidebarOpen ? 'is-open' : ''}" aria-label="공연 제작 메뉴">
@@ -161,6 +215,8 @@ function renderCurrentView(p, dDay, stage, risks) {
   if (currentView === 'performance') return renderPerformanceForm(p, true);
   if (currentView === 'production') return renderDashboard(p, stage) + renderRisks(risks);
   if (currentView === 'tasks') return renderTaskForm(p) + renderTaskTable(p);
+  if (currentView === 'calendar') return renderCalendar(p);
+  if (currentView === 'rehearsal') return renderRehearsalArchive(p);
   if (currentView === 'preshow') return renderPreShowChecklist();
   return renderHomeDashboard(p, dDay, stage, risks);
 }
@@ -393,6 +449,77 @@ function renderPartStatus(byPart) {
   }).join('');
 }
 
+function renderMotionHero(p, dDay) {
+  const heroNavigation = [
+    ['home', 'HOME'], ['performance', '공연 정보'], ['production', '제작 현황'],
+    ['tasks', '전체 업무'], ['calendar', '일정'], ['rehearsal', '연습일지'], ['preshow', '공연 전 체크'],
+  ];
+  return `<section class="motion-hero" aria-labelledby="motion-hero-title">
+    <div class="hero-video-stage" aria-hidden="true">
+      <video id="motion-hero-video" class="motion-hero-video" muted playsinline preload="metadata" poster="">
+        <source src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_083109_283f3553-e28f-428b-a723-d639c617eb2b.mp4" type="video/mp4">
+      </video>
+      <div class="hero-video-overlay"></div>
+    </div>
+    <div class="motion-hero-foreground">
+      <nav class="hero-nav fade-rise" aria-label="HOME 바로가기">
+        <button type="button" class="hero-wordmark" data-view="home">JEONDAE THEATRE<sup>®</sup></button>
+        <div class="hero-nav-links">${heroNavigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${view === 'home' ? 'is-active' : ''}">${label}</button>`).join('')}</div>
+        <button type="button" class="hero-quick-task" data-new-task>+ 새 업무</button>
+      </nav>
+      <div class="motion-hero-copy">
+        <span class="hero-production-label fade-rise">PERFORMANCE PRODUCTION / ${escapeHtml(p.status || '준비중')}</span>
+        <h1 id="motion-hero-title" class="fade-rise-delay"><span>${escapeHtml(p.title) || '우리의 공연'}</span><em>무대에 오르기 전부터.</em></h1>
+        <p class="hero-description fade-rise-delay-2">공연일까지의 모든 제작 과정과 기록을<br>하나의 Production Desk에서 관리합니다.</p>
+        <div class="hero-actions fade-rise-delay-2">
+          <button type="button" class="hero-dashboard-cta" data-hero-dashboard>오늘의 제작 현황 보기</button>
+          <span><b>${formatDday(dDay)}</b>${formatDisplayDate(p.date) || 'DATE TBA'}</span>
+        </div>
+      </div>
+      <div class="hero-footnote fade-rise-delay-2"><span>JEONDAE THEATRE ARCHIVE</span><span>SCROLL TO PRODUCTION DESK ↓</span></div>
+    </div>
+  </section>`;
+}
+
+function destroyHeroVideoLoop() {
+  if (heroVideoAnimationFrame !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(heroVideoAnimationFrame);
+  if (heroVideoRestartTimer !== null) clearTimeout(heroVideoRestartTimer);
+  heroVideoAnimationFrame = null;
+  heroVideoRestartTimer = null;
+}
+
+function initHeroVideoLoop() {
+  const video = document.getElementById('motion-hero-video');
+  if (!video) return;
+  const reducedMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const playVideo = () => {
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+  };
+  const updateOpacity = () => {
+    if (!video.isConnected) return;
+    if (reducedMotion) {
+      video.style.opacity = video.readyState >= 2 ? '1' : '0';
+    } else if (Number.isFinite(video.duration) && video.duration > 0) {
+      const fadeIn = Math.min(1, video.currentTime / .5);
+      const fadeOut = Math.min(1, Math.max(0, (video.duration - video.currentTime) / .5));
+      video.style.opacity = String(Math.min(fadeIn, fadeOut));
+    }
+    if (typeof requestAnimationFrame === 'function') heroVideoAnimationFrame = requestAnimationFrame(updateOpacity);
+  };
+  video.addEventListener('loadeddata', () => { video.style.opacity = reducedMotion ? '1' : '0'; playVideo(); }, { once: true });
+  video.addEventListener('ended', () => {
+    video.style.opacity = '0';
+    heroVideoRestartTimer = setTimeout(() => {
+      if (!video.isConnected) return;
+      video.currentTime = 0;
+      playVideo();
+    }, 100);
+  });
+  if (video.readyState >= 2) playVideo();
+  if (typeof requestAnimationFrame === 'function') heroVideoAnimationFrame = requestAnimationFrame(updateOpacity);
+}
+
 function renderHomeDashboard(p, dDay, stage, risks) {
   const data = getDashboardData(p, stage);
   const todayTasks = data.incomplete.filter(t => t.deadline === todayStr);
@@ -402,8 +529,9 @@ function renderHomeDashboard(p, dDay, stage, risks) {
     return (a.deadline || '9999-12-31').localeCompare(b.deadline || '9999-12-31');
   });
   return `
+    ${renderMotionHero(p, dDay)}
     ${renderHeader(p, dDay, stage)}
-    <section class="section home-kpi" id="home">
+    <section class="section home-kpi" id="home-dashboard">
       <div class="section-heading"><span class="act-label">HOME</span><span class="section-caption">PRODUCTION CONTROL ROOM</span><h2>오늘의 제작 상황</h2></div>
       <div class="stat-cards">
         <div class="stat"><div class="val">${state.tasks.length}</div><div class="lbl">전체 업무</div></div>
@@ -475,6 +603,223 @@ function renderDashboard(p, stage) {
   `;
 }
 
+/* ---------------- Production Calendar ---------------- */
+
+function toDateKey(year, monthIndex, day) {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function getCalendarItems(p) {
+  const taskItems = state.tasks.filter(task => task.deadline).map(task => ({
+    source: 'task', id: task.taskId, date: task.deadline, title: task.name,
+    time: '', type: 'TASK', meta: `${task.part || '파트 미정'} · 마감`, status: task.status,
+  }));
+  const eventItems = state.events.filter(event => event.date).map(event => ({
+    source: 'event', id: event.id, date: event.date, title: event.title,
+    time: event.startTime || '', endTime: event.endTime || '', type: event.type || '기타',
+    meta: [event.part, event.location].filter(Boolean).join(' · '), event,
+  }));
+  const performanceItems = p.date ? [{
+    source: 'performance', id: 'performance-date', date: p.date,
+    title: p.title || '공연', time: '', type: 'PERFORMANCE', meta: `${p.venue || '공연장 미정'} · D-DAY`,
+  }] : [];
+  return [...taskItems, ...eventItems, ...performanceItems].sort((a, b) =>
+    a.date.localeCompare(b.date) || (a.time || '99:99').localeCompare(b.time || '99:99') || a.title.localeCompare(b.title, 'ko')
+  );
+}
+
+function renderCalendarItem(item, compact = false) {
+  const content = `<span class="calendar-item-label">${escapeHtml(item.type)}</span><span class="calendar-item-title">${item.time ? `${escapeHtml(item.time)} ` : ''}${escapeHtml(item.title)}</span>`;
+  if (item.source === 'event') {
+    return `<button type="button" class="calendar-item event-item ${compact ? 'is-compact' : ''}" data-event-detail="${attr(item.id)}">${content}</button>`;
+  }
+  return `<div class="calendar-item ${item.source}-item ${compact ? 'is-compact' : ''}">${content}</div>`;
+}
+
+function renderCalendar(p) {
+  const year = calendarCursor.getFullYear();
+  const month = calendarCursor.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const mondayOffset = (firstDay.getDay() + 6) % 7;
+  const gridStart = new Date(year, month, 1 - mondayOffset);
+  const allItems = getCalendarItems(p);
+  const itemsByDate = {};
+  allItems.forEach(item => { (itemsByDate[item.date] ||= []).push(item); });
+  const weekdayLabels = ['월', '화', '수', '목', '금', '토', '일'];
+  const cells = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    const key = toDateKey(date.getFullYear(), date.getMonth(), date.getDate());
+    const items = itemsByDate[key] || [];
+    const visibleItems = items.slice(0, 3);
+    const classes = [date.getMonth() !== month ? 'is-outside' : '', key === todayStr ? 'is-today' : '', key === selectedCalendarDate ? 'is-selected' : ''].filter(Boolean).join(' ');
+    return `<div class="calendar-day ${classes}" data-calendar-date="${key}">
+      <button type="button" class="calendar-date-button" data-select-date="${key}" aria-label="${key} 일정 보기">
+        <span class="calendar-date-number">${date.getDate()}</span>${key === todayStr ? '<span class="today-label">TODAY</span>' : ''}
+      </button>
+      <div class="calendar-day-items">${visibleItems.map(item => renderCalendarItem(item, true)).join('')}${items.length > 3 ? `<button type="button" class="calendar-more" data-select-date="${key}">+${items.length - 3} MORE</button>` : ''}</div>
+    </div>`;
+  }).join('');
+  const selectedItems = itemsByDate[selectedCalendarDate] || [];
+  const upcoming = allItems.filter(item => item.date >= todayStr).slice(0, 12);
+
+  return `<section class="section section-calendar" id="section-calendar">
+    <div class="section-heading calendar-heading"><span class="act-label">ACT 06</span><span class="section-caption">PRODUCTION CALENDAR</span><h2><span class="n">06</span>일정</h2></div>
+    <div class="calendar-toolbar">
+      <button type="button" class="calendar-nav" data-calendar-prev aria-label="이전 달">←</button>
+      <h3>${year}년 ${month + 1}월</h3>
+      <button type="button" class="calendar-nav" data-calendar-next aria-label="다음 달">→</button>
+      <button type="button" class="small ghost calendar-today" data-calendar-today>오늘</button>
+      <button type="button" class="calendar-add" data-new-event>+ 새 일정 추가</button>
+    </div>
+    ${renderEventForm(p)}
+    <div class="calendar-scroll" aria-label="${year}년 ${month + 1}월 제작 일정표">
+      <div class="calendar-grid calendar-weekdays">${weekdayLabels.map(day => `<div>${day}</div>`).join('')}</div>
+      <div class="calendar-grid calendar-month">${cells}</div>
+    </div>
+    <div class="calendar-below">
+      <div class="selected-date-panel">
+        <span class="calendar-eyebrow">SELECTED DATE</span>
+        <h3>${formatDisplayDate(selectedCalendarDate)}</h3>
+        ${selectedItems.length ? selectedItems.map(item => renderScheduleRow(item, true)).join('') : '<div class="empty">선택한 날짜에 일정이 없습니다.</div>'}
+      </div>
+      <div class="upcoming-panel">
+        <span class="calendar-eyebrow">UPCOMING SCHEDULE</span>
+        <h3>다가오는 일정</h3>
+        ${upcoming.length ? upcoming.map(item => renderScheduleRow(item)).join('') : '<div class="empty">예정된 일정이 없습니다.</div>'}
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderScheduleRow(item, showActions = false) {
+  const timeText = item.time ? `${item.time}${item.endTime ? `–${item.endTime}` : ''}` : 'ALL DAY';
+  const detail = item.event && item.event.memo ? `${item.meta ? `${item.meta} · ` : ''}${item.event.memo}` : (item.meta || item.type);
+  return `<div class="schedule-row ${item.source}-schedule">
+    <span class="schedule-date">${item.date.slice(5).replace('-', '.')}</span>
+    <span class="schedule-time">${escapeHtml(timeText)}</span>
+    <span class="schedule-copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span>
+    <span class="schedule-kind">${escapeHtml(item.type)}</span>
+    ${showActions && item.source === 'event' ? `<span class="schedule-actions"><button type="button" class="small ghost" data-edit-event="${attr(item.id)}">수정</button><button type="button" class="small danger" data-delete-event="${attr(item.id)}">삭제</button></span>` : ''}
+  </div>`;
+}
+
+function renderEventForm(p) {
+  if (!isEventFormOpen) return '';
+  const event = editingEventId ? state.events.find(item => item.id === editingEventId) : null;
+  const value = (key, fallback = '') => event && event[key] !== undefined ? event[key] : fallback;
+  return `<div class="event-form-panel">
+    <div class="editor-actions"><span>${event ? 'EDIT PRODUCTION SCHEDULE' : 'NEW PRODUCTION SCHEDULE'}</span><button type="button" class="small ghost" data-close-event-form>닫기</button></div>
+    <div class="grid3 event-form-grid">
+      <div class="field"><label for="e-title">일정명 *</label><input id="e-title" type="text" value="${attr(value('title'))}" placeholder="예: 전체연습"></div>
+      <div class="field"><label for="e-date">날짜 *</label><input id="e-date" type="date" value="${attr(value('date', selectedCalendarDate))}"></div>
+      <div class="field"><label for="e-type">종류</label><select id="e-type">${EVENT_TYPES.map(type => `<option ${value('type', '연습') === type ? 'selected' : ''}>${type}</option>`).join('')}</select></div>
+      <div class="field"><label for="e-start">시작 시간</label><input id="e-start" type="time" value="${attr(value('startTime'))}"></div>
+      <div class="field"><label for="e-end">종료 시간</label><input id="e-end" type="time" value="${attr(value('endTime'))}"></div>
+      <div class="field"><label for="e-part">관련 파트</label><select id="e-part"><option value="">전체 / 미지정</option>${p.parts.map(part => `<option ${value('part') === part ? 'selected' : ''}>${escapeHtml(part)}</option>`).join('')}</select></div>
+      <div class="field"><label for="e-location">장소</label><input id="e-location" type="text" value="${attr(value('location'))}" placeholder="예: 동아리방"></div>
+      <div class="field event-memo"><label for="e-memo">메모</label><textarea id="e-memo" rows="2" placeholder="연결 장면, 준비물 등">${escapeHtml(value('memo'))}</textarea></div>
+    </div>
+    <div class="event-form-actions"><button type="button" id="save-event">${event ? '일정 수정' : '일정 저장'}</button></div>
+  </div>`;
+}
+
+/* ---------------- Rehearsal Archive ---------------- */
+
+function getSortedRehearsalLogs() {
+  return rehearsalLogs.slice().sort((a, b) =>
+    String(b.date || '').localeCompare(String(a.date || '')) ||
+    String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+  );
+}
+
+function getFilteredRehearsalLogs() {
+  const query = rehearsalSearchQuery.trim().toLocaleLowerCase('ko-KR');
+  return getSortedRehearsalLogs().filter(log => {
+    if (rehearsalCategoryFilter !== '전체' && log.category !== rehearsalCategoryFilter) return false;
+    if (!query) return true;
+    return [log.title, log.content, log.author, ...(Array.isArray(log.tags) ? log.tags : [])]
+      .some(value => String(value || '').toLocaleLowerCase('ko-KR').includes(query));
+  });
+}
+
+function renderRehearsalArchive(p) {
+  const selected = rehearsalLogs.find(log => log.id === selectedRehearsalLogId);
+  if (rehearsalArchiveMode === 'detail' && selected) return renderRehearsalDetail(selected);
+  if (rehearsalArchiveMode === 'create' || (rehearsalArchiveMode === 'edit' && selected)) {
+    return renderRehearsalForm(p, rehearsalArchiveMode === 'edit' ? selected : null);
+  }
+  rehearsalArchiveMode = 'list';
+  return renderRehearsalList();
+}
+
+function renderRehearsalHeading(title, caption = 'REHEARSAL ARCHIVE') {
+  return `<div class="section-heading rehearsal-heading"><span class="act-label">ACT 05</span><span class="section-caption">${caption}</span><h2><span class="n">05</span>${title}</h2></div>`;
+}
+
+function renderRehearsalList() {
+  const logs = getFilteredRehearsalLogs();
+  const hasFilter = rehearsalCategoryFilter !== '전체' || rehearsalSearchQuery.trim();
+  return `<section class="section section-rehearsal" id="section-rehearsal">
+    ${renderRehearsalHeading('연습일지')}
+    <div class="rehearsal-list-toolbar">
+      <p><span class="archive-count">${String(rehearsalLogs.length).padStart(2, '0')}</span> NOTES IN ARCHIVE</p>
+      <button type="button" data-new-rehearsal-log>+ 글쓰기</button>
+    </div>
+    <form class="rehearsal-search" id="rehearsal-search-form" role="search">
+      <label for="rehearsal-search-input">연습일지 검색</label>
+      <div><input id="rehearsal-search-input" type="search" value="${attr(rehearsalSearchQuery)}" placeholder="제목, 본문, 작성자, 태그 검색"><button type="submit" class="ghost">검색</button></div>
+    </form>
+    <div class="rehearsal-filters" aria-label="연습일지 분류">
+      ${['전체', ...REHEARSAL_CATEGORIES].map(category => `<button type="button" data-rehearsal-category="${attr(category)}" class="${rehearsalCategoryFilter === category ? 'is-active' : ''}" aria-pressed="${rehearsalCategoryFilter === category}">${category}</button>`).join('')}
+    </div>
+    <div class="rehearsal-list" aria-live="polite">
+      ${logs.length ? logs.map(log => `<article class="rehearsal-list-item">
+        <button type="button" data-rehearsal-detail="${attr(log.id)}" aria-label="${attr(log.title)} 연습일지 읽기">
+          <span class="rehearsal-index">${escapeHtml(String(log.id || '').replace('LOG-', ''))} / ${escapeHtml(log.category || '기타')}</span>
+          <strong>${escapeHtml(log.title)}</strong>
+          <span class="rehearsal-list-meta">${escapeHtml(log.author)} · ${formatDisplayDate(log.date)}</span>
+          ${Array.isArray(log.tags) && log.tags.length ? `<span class="rehearsal-list-tags">${log.tags.slice(0, 3).map(tag => `#${escapeHtml(tag)}`).join(' ')}</span>` : ''}
+        </button>
+      </article>`).join('') : `<div class="rehearsal-empty"><strong>${hasFilter ? '조건에 맞는 연습일지가 없습니다.' : '아직 작성된 연습일지가 없습니다.'}</strong>${hasFilter ? '<button type="button" class="ghost" data-clear-rehearsal-filter>검색과 분류 초기화</button>' : '<p>첫 연습 기록을 남겨보세요.</p><button type="button" data-new-rehearsal-log>+ 연습일지 작성</button>'}</div>`}
+    </div>
+  </section>`;
+}
+
+function renderRehearsalDetail(log) {
+  const tags = Array.isArray(log.tags) ? log.tags : [];
+  return `<section class="section section-rehearsal rehearsal-detail" id="section-rehearsal">
+    <button type="button" class="rehearsal-back" data-rehearsal-list>← 목록으로</button>
+    <header class="rehearsal-note-header">
+      <span class="rehearsal-index">REHEARSAL NOTE / ${escapeHtml(String(log.id || '').replace('LOG-', ''))}</span>
+      <h2>${escapeHtml(log.title)}</h2>
+      <dl><div><dt>DATE</dt><dd>${formatDisplayDate(log.date)}</dd></div><div><dt>AUTHOR</dt><dd>${escapeHtml(log.author)}</dd></div><div><dt>CATEGORY</dt><dd>${escapeHtml(log.category || '기타')}</dd></div></dl>
+    </header>
+    <div class="rehearsal-content">${escapeHtml(log.content).replace(/\n/g, '<br>')}</div>
+    ${tags.length ? `<div class="rehearsal-detail-tags">${tags.map(tag => `<span>#${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+    <div class="rehearsal-detail-actions"><button type="button" class="ghost" data-edit-rehearsal-log="${attr(log.id)}">수정</button><button type="button" class="danger" data-delete-rehearsal-log="${attr(log.id)}">삭제</button></div>
+  </section>`;
+}
+
+function renderRehearsalForm(p, log = null) {
+  const value = (key, fallback = '') => log && log[key] !== undefined ? log[key] : fallback;
+  const tags = Array.isArray(value('tags', [])) ? value('tags', []).map(tag => `#${tag}`).join(' ') : '';
+  const authors = [...new Set((p.participants || []).map(person => person.name).filter(Boolean))];
+  return `<section class="section section-rehearsal rehearsal-editor" id="section-rehearsal">
+    ${renderRehearsalHeading(log ? '연습일지 수정' : '새 연습 기록', log ? 'EDIT REHEARSAL NOTE' : 'NEW REHEARSAL NOTE')}
+    <form id="rehearsal-log-form">
+      <div class="field rehearsal-title-field"><label for="r-title">제목 *</label><input id="r-title" type="text" value="${attr(value('title'))}" required placeholder="오늘의 연습을 한 문장으로 기록하세요"></div>
+      <div class="grid2">
+        <div class="field"><label for="r-author">작성자 *</label><input id="r-author" type="text" list="rehearsal-authors" value="${attr(value('author'))}" required autocomplete="name"><datalist id="rehearsal-authors">${authors.map(name => `<option value="${attr(name)}"></option>`).join('')}</datalist></div>
+        <div class="field"><label for="r-date">연습일 *</label><input id="r-date" type="date" value="${attr(value('date', todayStr))}" required></div>
+      </div>
+      <fieldset class="rehearsal-category-field"><legend>분류</legend><div>${REHEARSAL_CATEGORIES.map(category => `<label><input type="radio" name="rehearsal-category" value="${attr(category)}" ${value('category', '전체연습') === category ? 'checked' : ''}><span>${category}</span></label>`).join('')}</div></fieldset>
+      <div class="field"><label for="r-content">내용 *</label><textarea id="r-content" rows="12" required placeholder="오늘 연습에서는...">${escapeHtml(value('content'))}</textarea></div>
+      <div class="field"><label for="r-tags">태그 <span class="field-translation">/ 띄어쓰기 또는 쉼표로 구분</span></label><input id="r-tags" type="text" value="${attr(tags)}" placeholder="#전체연습 #런스루"></div>
+      <div class="rehearsal-form-actions"><button type="button" class="ghost" data-rehearsal-cancel>취소</button><button type="submit">${log ? '수정 완료' : '등록하기'}</button></div>
+    </form>
+  </section>`;
+}
+
 function renderPreShowChecklist() {
   const items = state.tasks.filter(t => t.preShowCheck);
   const done = items.filter(t => t.status === '완료').length;
@@ -526,6 +871,141 @@ function bindEvents() {
   document.querySelectorAll('[data-toggle-task-form]').forEach(btn => {
     btn.onclick = () => { isTaskFormOpen = !isTaskFormOpen; render(); };
   });
+  document.querySelectorAll('[data-hero-dashboard]').forEach(btn => {
+    btn.onclick = () => {
+      const dashboard = document.getElementById('home-dashboard');
+      if (dashboard) dashboard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+
+  document.querySelectorAll('[data-new-rehearsal-log]').forEach(btn => {
+    btn.onclick = () => { selectedRehearsalLogId = null; rehearsalArchiveMode = 'create'; render(); };
+  });
+  document.querySelectorAll('[data-rehearsal-list], [data-rehearsal-cancel]').forEach(btn => {
+    btn.onclick = () => { rehearsalArchiveMode = 'list'; selectedRehearsalLogId = null; render(); };
+  });
+  document.querySelectorAll('[data-rehearsal-detail]').forEach(btn => {
+    btn.onclick = () => { selectedRehearsalLogId = btn.dataset.rehearsalDetail; rehearsalArchiveMode = 'detail'; render(); };
+  });
+  document.querySelectorAll('[data-edit-rehearsal-log]').forEach(btn => {
+    btn.onclick = () => { selectedRehearsalLogId = btn.dataset.editRehearsalLog; rehearsalArchiveMode = 'edit'; render(); };
+  });
+  document.querySelectorAll('[data-delete-rehearsal-log]').forEach(btn => {
+    btn.onclick = () => {
+      if (!window.confirm('이 연습일지를 삭제하시겠습니까?\n삭제된 글은 복구할 수 없습니다.')) return;
+      rehearsalLogs = rehearsalLogs.filter(log => log.id !== btn.dataset.deleteRehearsalLog);
+      selectedRehearsalLogId = null; rehearsalArchiveMode = 'list';
+      saveRehearsalLogs(); render();
+    };
+  });
+  document.querySelectorAll('[data-rehearsal-category]').forEach(btn => {
+    btn.onclick = () => { rehearsalCategoryFilter = btn.dataset.rehearsalCategory; render(); };
+  });
+  document.querySelectorAll('[data-clear-rehearsal-filter]').forEach(btn => {
+    btn.onclick = () => { rehearsalCategoryFilter = '전체'; rehearsalSearchQuery = ''; render(); };
+  });
+  const rehearsalSearchForm = document.getElementById('rehearsal-search-form');
+  if (rehearsalSearchForm) rehearsalSearchForm.onsubmit = event => {
+    event.preventDefault();
+    rehearsalSearchQuery = document.getElementById('rehearsal-search-input').value;
+    render();
+  };
+  const rehearsalLogForm = document.getElementById('rehearsal-log-form');
+  if (rehearsalLogForm) rehearsalLogForm.onsubmit = event => {
+    event.preventDefault();
+    if (!rehearsalLogForm.reportValidity()) return;
+    const titleInput = document.getElementById('r-title');
+    const authorInput = document.getElementById('r-author');
+    const contentInput = document.getElementById('r-content');
+    if (!titleInput.value.trim()) { titleInput.focus(); return; }
+    if (!authorInput.value.trim()) { authorInput.focus(); return; }
+    if (!contentInput.value.trim()) { contentInput.focus(); return; }
+    const existing = rehearsalLogs.find(log => log.id === selectedRehearsalLogId);
+    const timestamp = new Date().toISOString();
+    const rawTags = document.getElementById('r-tags').value;
+    const tags = [...new Set(rawTags.split(/[\s,]+/).map(tag => tag.replace(/^#+/, '').trim()).filter(Boolean))];
+    const logData = {
+      id: existing ? existing.id : nextRehearsalLogId(),
+      title: titleInput.value.trim(),
+      author: authorInput.value.trim(),
+      date: document.getElementById('r-date').value,
+      category: rehearsalLogForm.querySelector('[name="rehearsal-category"]:checked').value,
+      content: contentInput.value.trim(),
+      tags,
+      createdAt: existing ? existing.createdAt : timestamp,
+      updatedAt: timestamp,
+    };
+    if (existing) rehearsalLogs[rehearsalLogs.indexOf(existing)] = logData;
+    else rehearsalLogs.push(logData);
+    selectedRehearsalLogId = logData.id; rehearsalArchiveMode = 'detail';
+    saveRehearsalLogs(); render();
+  };
+
+  document.querySelectorAll('[data-calendar-prev]').forEach(btn => {
+    btn.onclick = () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() - 1, 1); render(); };
+  });
+  document.querySelectorAll('[data-calendar-next]').forEach(btn => {
+    btn.onclick = () => { calendarCursor = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1); render(); };
+  });
+  document.querySelectorAll('[data-calendar-today]').forEach(btn => {
+    btn.onclick = () => { calendarCursor = new Date(now.getFullYear(), now.getMonth(), 1); selectedCalendarDate = todayStr; render(); };
+  });
+  document.querySelectorAll('[data-select-date]').forEach(btn => {
+    btn.onclick = event => { event.stopPropagation(); selectedCalendarDate = btn.dataset.selectDate; render(); };
+  });
+  document.querySelectorAll('[data-calendar-date]').forEach(cell => {
+    cell.onclick = () => { selectedCalendarDate = cell.dataset.calendarDate; render(); };
+  });
+  document.querySelectorAll('[data-event-detail]').forEach(btn => {
+    btn.onclick = event => {
+      event.stopPropagation();
+      const item = state.events.find(entry => entry.id === btn.dataset.eventDetail);
+      if (item) selectedCalendarDate = item.date;
+      render();
+    };
+  });
+  document.querySelectorAll('[data-new-event]').forEach(btn => {
+    btn.onclick = () => { editingEventId = null; isEventFormOpen = true; render(); };
+  });
+  document.querySelectorAll('[data-close-event-form]').forEach(btn => {
+    btn.onclick = () => { editingEventId = null; isEventFormOpen = false; render(); };
+  });
+  document.querySelectorAll('[data-edit-event]').forEach(btn => {
+    btn.onclick = () => { editingEventId = btn.dataset.editEvent; isEventFormOpen = true; render(); };
+  });
+  document.querySelectorAll('[data-delete-event]').forEach(btn => {
+    btn.onclick = () => {
+      state.events = state.events.filter(event => event.id !== btn.dataset.deleteEvent);
+      if (editingEventId === btn.dataset.deleteEvent) { editingEventId = null; isEventFormOpen = false; }
+      render(); saveState();
+    };
+  });
+
+  const saveEventBtn = document.getElementById('save-event');
+  if (saveEventBtn) saveEventBtn.onclick = () => {
+    const titleInput = document.getElementById('e-title');
+    const dateInput = document.getElementById('e-date');
+    const title = titleInput.value.trim();
+    const date = dateInput.value;
+    if (!title) { titleInput.focus(); return; }
+    if (!date) { dateInput.focus(); return; }
+    const eventData = {
+      id: editingEventId || nextEventId(), title, date,
+      startTime: document.getElementById('e-start').value,
+      endTime: document.getElementById('e-end').value,
+      type: document.getElementById('e-type').value,
+      part: document.getElementById('e-part').value,
+      location: document.getElementById('e-location').value.trim(),
+      memo: document.getElementById('e-memo').value.trim(),
+    };
+    const index = state.events.findIndex(event => event.id === editingEventId);
+    if (index >= 0) state.events[index] = eventData;
+    else state.events.push(eventData);
+    selectedCalendarDate = date;
+    calendarCursor = new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, 1);
+    editingEventId = null; isEventFormOpen = false;
+    render(); saveState();
+  };
 
   const ft = document.getElementById('f-title');
   if (ft) ft.onchange = e => { p.title = e.target.value; render(); saveState(); };
