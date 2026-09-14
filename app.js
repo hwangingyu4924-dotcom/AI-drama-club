@@ -43,12 +43,44 @@ let selectedCalendarDate = todayStr;
 let isEventFormOpen = false;
 let editingEventId = null;
 let rehearsalLogs = [];
+let supabaseRehearsalLogs = [];
+let activeSupabaseProduction = null;
+let rehearsalSyncMessage = '';
+let rehearsalWriteBusy = false;
+let pendingRehearsalImages = [];
+const rehearsalImagesByLog = new Map();
+let rehearsalFormDraft = null;
+let rehearsalImageDialog = null;
+const rehearsalDeleteInFlight = new Set();
 let rehearsalArchiveMode = 'list';
 let selectedRehearsalLogId = null;
 let rehearsalCategoryFilter = '전체';
 let rehearsalSearchQuery = '';
 let heroVideoAnimationFrame = null;
 let heroVideoRestartTimer = null;
+let authReady = false;
+let authSession = null;
+let authUser = null;
+let authProfile = null;
+let authProfileStatus = 'UNKNOWN';
+let authMessage = '';
+let authBusy = false;
+let authListenerUnsubscribe = null;
+let isLoginViewOpen = false;
+let pendingProtectedView = null;
+let legacyLocalTasks = [];
+let usesSupabaseTasks = false;
+let taskSyncMessage = '';
+let taskWriteBusy = false;
+const taskDeleteInFlight = new Set();
+let legacyLocalEvents = [];
+let usesSupabaseEvents = false;
+let eventSyncMessage = '';
+let eventWriteBusy = false;
+const eventDeleteInFlight = new Set();
+let authMode = 'login';
+let productionAccessStatus = 'UNKNOWN';
+let currentProductionRole = null;
 
 const EVENT_TYPES = ['연습', '회의', '리딩', '공연', '설치/기술', '기타'];
 const REHEARSAL_CATEGORIES = ['전체연습', '연기', '연출', '무대', '회의', '기타'];
@@ -57,7 +89,12 @@ const REHEARSAL_CATEGORIES = ['전체연습', '연기', '연출', '무대', '회
 
 function saveState() {
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    const persistedState = {
+      ...state,
+      tasks: usesSupabaseTasks ? legacyLocalTasks : state.tasks,
+      events: usesSupabaseEvents ? legacyLocalEvents : state.events,
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(persistedState));
     setSaveStatus('저장됨 · ' + new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     setSaveStatus('저장 실패 — 브라우저 저장공간을 확인하세요');
@@ -151,6 +188,7 @@ function nextRehearsalLogId() {
 /* ---------------- 초기화 ---------------- */
 
 async function init() {
+  renderAuthLoading();
   loadRehearsalLogs();
   const fromLocal = loadFromLocalStorage();
   if (!fromLocal) {
@@ -159,7 +197,350 @@ async function init() {
       setSaveStatus('⚠ data/*.json을 불러오지 못했습니다 (로컬 서버로 실행해 주세요) — 기본값으로 시작합니다');
     }
   }
+  legacyLocalTasks = state.tasks.map(task => ({ ...task }));
+  legacyLocalEvents = state.events.map(event => ({ ...event }));
+  await initializeAuth();
+  if (authSession) {
+    await loadSupabaseRehearsalContext();
+    await loadSupabaseTaskContext();
+    await loadSupabaseEventContext();
+  }
+  authReady = true;
   render();
+  if (authSession) startSupabaseReadProbe();
+}
+
+function renderAuthLoading() {
+  const root = document.getElementById('app');
+  root.innerHTML = `<main class="auth-shell"><div class="auth-panel"><span class="auth-kicker">JEONDAE THEATRE / PRODUCTION DESK</span><strong class="auth-wordmark">전대극회</strong><p class="auth-loading" role="status">세션을 확인하고 있습니다.</p></div></main>`;
+}
+
+async function initializeAuth() {
+  if (!window.AuthService) {
+    authMessage = '로그인 서비스를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.';
+    return;
+  }
+  try {
+    if (!authListenerUnsubscribe) {
+      authListenerUnsubscribe = await window.AuthService.onAuthStateChange((event, session) => {
+        Promise.resolve().then(() => applyAuthSession(session, event));
+      });
+    }
+    const restored = await window.AuthService.getSession();
+    authSession = restored.session;
+    authUser = restored.user;
+    if (authSession) {
+      authUser = await window.AuthService.getCurrentUser();
+      await loadCurrentProfile();
+    }
+  } catch (error) {
+    authSession = null;
+    authUser = null;
+    authProfile = null;
+    authProfileStatus = 'FAIL';
+    authMessage = error.message || '세션을 확인하지 못했습니다. 다시 로그인해 주세요.';
+  }
+}
+
+async function applyAuthSession(session, event) {
+  const wasSignedIn = Boolean(authSession);
+  authSession = session || null;
+  authUser = session && session.user || null;
+  authMessage = '';
+  if (authSession) {
+    await loadCurrentProfile();
+    await loadSupabaseRehearsalContext();
+    await loadSupabaseTaskContext();
+    await loadSupabaseEventContext();
+    if (pendingProtectedView) currentView = pendingProtectedView;
+    pendingProtectedView = null;
+    isLoginViewOpen = false;
+  } else {
+    authProfile = null; authProfileStatus = 'UNKNOWN';
+    activeSupabaseProduction = null; supabaseRehearsalLogs = [];
+    usesSupabaseTasks = false; state.tasks = legacyLocalTasks.map(task => ({ ...task })); taskSyncMessage = '';
+    usesSupabaseEvents = false; state.events = legacyLocalEvents.map(event => ({ ...event })); eventSyncMessage = '';
+    rehearsalImagesByLog.clear();
+    clearPendingRehearsalImages();
+    rehearsalImageDialog = null;
+    currentView = 'home';
+    pendingProtectedView = null;
+    isLoginViewOpen = false;
+  }
+  if (!authReady) return;
+  render();
+  if (authSession && (!wasSignedIn || event === 'SIGNED_IN')) startSupabaseReadProbe();
+}
+
+async function loadCurrentProfile() {
+  authProfile = null;
+  if (!authUser || !window.SupabaseReadService) { authProfileStatus = 'FAIL'; return; }
+  const result = await window.SupabaseReadService.getProfile(authUser.id);
+  if (result.status === 'PASS' && result.data[0] && result.data[0].id === authUser.id) {
+    authProfile = result.data[0];
+    authProfileStatus = 'PASS';
+  } else if (result.status === 'EMPTY') authProfileStatus = 'MISSING';
+  else authProfileStatus = 'FAIL';
+  console.info('[Supabase Auth] profile link:', authProfileStatus);
+}
+
+function mapSupabaseRehearsalLog(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    author: row.author,
+    date: row.rehearsal_date,
+    category: row.category,
+    content: row.content,
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    productionId: row.production_id,
+    authorProfileId: row.author_profile_id,
+    source: 'supabase',
+  };
+}
+
+function clearPendingRehearsalImages() {
+  if (window.RehearsalImageStorageService) {
+    pendingRehearsalImages.forEach(item => window.RehearsalImageStorageService.revokeImagePreview(item.previewUrl));
+  }
+  pendingRehearsalImages = [];
+}
+
+function captureRehearsalFormDraft() {
+  const form = document.getElementById('rehearsal-log-form');
+  if (!form) return;
+  rehearsalFormDraft = {
+    title: document.getElementById('r-title').value,
+    author: document.getElementById('r-author').value,
+    date: document.getElementById('r-date').value,
+    category: form.querySelector('[name="rehearsal-category"]:checked').value,
+    content: document.getElementById('r-content').value,
+    tags: document.getElementById('r-tags').value.split(/[\s,]+/).map(tag => tag.replace(/^#+/, '').trim()).filter(Boolean),
+  };
+}
+
+function imageStatusLabel(status) {
+  return ({ ready: '준비', processing: '처리 중', uploading: '업로드 중', complete: '완료', failed: '실패' })[status] || '준비';
+}
+
+async function loadRehearsalImages(logId) {
+  if (!window.SupabaseDataService || !window.RehearsalImageStorageService) return [];
+  const result = await window.SupabaseDataService.getRehearsalLogImages(logId);
+  if (result.status !== 'PASS' && result.status !== 'EMPTY') {
+    rehearsalSyncMessage = '첨부 이미지를 불러오지 못했습니다.';
+    return [];
+  }
+  const orderedRows = (result.data || []).slice().sort((a, b) =>
+    Number(a.sort_order) - Number(b.sort_order)
+    || String(a.created_at || '').localeCompare(String(b.created_at || ''))
+    || String(a.id).localeCompare(String(b.id))
+  );
+  const images = await Promise.all(orderedRows.map(async image => {
+    try {
+      return { ...image, ...(await window.RehearsalImageStorageService.createSignedImageUrl(image.storage_path)), signedStatus: 'ready' };
+    } catch (error) {
+      console.warn('[Rehearsal Image] signed URL failed', image.id, error.code || 'SIGNED_URL_FAILED');
+      return { ...image, signedUrl: '', expiresAt: '', signedStatus: 'failed' };
+    }
+  }));
+  rehearsalImagesByLog.set(logId, images);
+  return images;
+}
+
+function rehearsalImageAlt(log, index) {
+  return `${log.title || '연습일지'} 이미지 ${index + 1}`;
+}
+
+async function ensureFreshRehearsalImageUrl(image) {
+  const expiresSoon = !image.signedUrl || !image.expiresAt || Date.parse(image.expiresAt) <= Date.now() + 60000;
+  if (!expiresSoon) return image;
+  try {
+    Object.assign(image, await window.RehearsalImageStorageService.refreshSignedImageUrl(image.storage_path), { signedStatus: 'ready' });
+  } catch (error) {
+    image.signedStatus = 'failed';
+    console.warn('[Rehearsal Image] signed URL refresh failed', image.id, error.code || 'SIGNED_URL_FAILED');
+  }
+  return image;
+}
+
+function renderRehearsalImageItems(log, editable) {
+  const saved = log && log.source === 'supabase' ? (rehearsalImagesByLog.get(log.id) || []) : [];
+  const pending = editable ? pendingRehearsalImages : [];
+  if (!saved.length && !pending.length) return '';
+  const savedMarkup = saved.map((image, index) => `<figure class="rehearsal-image-item" data-saved-image="${attr(image.id)}">
+    ${image.signedUrl ? (editable ? `<img src="${attr(image.signedUrl)}" data-signed-image-path="${attr(image.storage_path)}" alt="${attr(rehearsalImageAlt(log, index))}" loading="lazy">` : `<button type="button" class="rehearsal-gallery-thumb" data-open-image-dialog="${attr(image.id)}" aria-label="${attr(rehearsalImageAlt(log, index))} 크게 보기"><img src="${attr(image.signedUrl)}" data-signed-image-path="${attr(image.storage_path)}" alt="${attr(rehearsalImageAlt(log, index))}" loading="lazy"></button>`) : '<div class="rehearsal-image-unavailable">이미지를 불러오지 못했습니다.</div>'}
+    ${editable ? `<figcaption><span class="rehearsal-image-name">${escapeHtml(image.original_filename)}</span><span class="rehearsal-image-status">저장됨</span><span class="rehearsal-image-actions"><button type="button" class="ghost" data-image-move="saved-prev" data-image-id="${attr(image.id)}" aria-label="${attr(image.original_filename)} 앞으로 이동" ${index === 0 ? 'disabled' : ''}>←</button><button type="button" class="ghost" data-image-move="saved-next" data-image-id="${attr(image.id)}" aria-label="${attr(image.original_filename)} 뒤로 이동" ${index === saved.length - 1 ? 'disabled' : ''}>→</button><button type="button" class="danger" data-delete-saved-image="${attr(image.id)}" aria-label="${attr(image.original_filename)} 삭제">삭제</button></span></figcaption>` : ''}
+  </figure>`).join('');
+  const pendingMarkup = pending.map((item, index) => `<figure class="rehearsal-image-item is-${attr(item.status)}" data-pending-image="${attr(item.localId)}">
+    <img src="${attr(item.previewUrl)}" alt="업로드 전 미리보기: ${attr(item.file.name)}">
+    <figcaption><span class="rehearsal-image-name">${escapeHtml(item.file.name)}</span><span class="rehearsal-image-status" role="status">${imageStatusLabel(item.status)}${item.message ? ` · ${escapeHtml(item.message)}` : ''}</span><span class="rehearsal-image-actions"><button type="button" class="ghost" data-image-move="pending-prev" data-image-id="${attr(item.localId)}" aria-label="${attr(item.file.name)} 앞으로 이동" ${index === 0 ? 'disabled' : ''}>←</button><button type="button" class="ghost" data-image-move="pending-next" data-image-id="${attr(item.localId)}" aria-label="${attr(item.file.name)} 뒤로 이동" ${index === pending.length - 1 ? 'disabled' : ''}>→</button>${item.status === 'failed' && log ? `<button type="button" class="ghost" data-retry-image="${attr(item.localId)}">다시 시도</button>` : ''}<button type="button" class="danger" data-remove-pending-image="${attr(item.localId)}" aria-label="${attr(item.file.name)} 제거">제거</button></span></figcaption>
+  </figure>`).join('');
+  return `<div class="rehearsal-image-grid">${savedMarkup}${pendingMarkup}</div>`;
+}
+
+function renderRehearsalImageDialog() {
+  if (!rehearsalImageDialog) return '';
+  const log = findRehearsalLogById(rehearsalImageDialog.logId);
+  const images = rehearsalImagesByLog.get(rehearsalImageDialog.logId) || [];
+  if (!log || !images.length) return '';
+  const index = Math.max(0, Math.min(rehearsalImageDialog.index, images.length - 1));
+  const image = images[index];
+  return `<div class="image-dialog-backdrop" data-image-dialog-backdrop>
+    <section class="image-dialog" role="dialog" aria-modal="true" aria-label="${attr(log.title)} 이미지 확대 보기" tabindex="-1">
+      <header class="image-dialog-header"><span aria-live="polite">${index + 1} / ${images.length}</span><button type="button" data-image-dialog-close aria-label="이미지 확대 보기 닫기">닫기 ×</button></header>
+      <div class="image-dialog-stage">
+        ${image.signedUrl && image.signedStatus !== 'failed' ? `<img src="${attr(image.signedUrl)}" data-dialog-image data-signed-image-path="${attr(image.storage_path)}" alt="${attr(rehearsalImageAlt(log, index))}">` : '<p class="image-dialog-error" role="status">이미지를 불러오지 못했습니다.</p>'}
+      </div>
+      <footer class="image-dialog-controls">
+        <button type="button" data-image-dialog-prev aria-label="이전 이미지" ${images.length === 1 ? 'disabled' : ''}>← 이전</button>
+        <button type="button" data-image-dialog-next aria-label="다음 이미지" ${images.length === 1 ? 'disabled' : ''}>다음 →</button>
+      </footer>
+    </section>
+  </div>`;
+}
+
+async function showRehearsalImageDialog(logId, imageId) {
+  const images = rehearsalImagesByLog.get(logId) || [];
+  const index = images.findIndex(image => image.id === imageId);
+  if (index < 0) return;
+  await ensureFreshRehearsalImageUrl(images[index]);
+  rehearsalImageDialog = { logId, index, restoreImageId: imageId };
+  render();
+}
+
+function closeRehearsalImageDialog() {
+  if (!rehearsalImageDialog) return;
+  const restoreImageId = rehearsalImageDialog.restoreImageId;
+  rehearsalImageDialog = null;
+  render();
+  document.querySelector(`[data-open-image-dialog="${restoreImageId}"]`)?.focus();
+}
+
+async function stepRehearsalImageDialog(direction) {
+  if (!rehearsalImageDialog) return;
+  const images = rehearsalImagesByLog.get(rehearsalImageDialog.logId) || [];
+  if (images.length < 2) return;
+  rehearsalImageDialog.index = (rehearsalImageDialog.index + direction + images.length) % images.length;
+  await ensureFreshRehearsalImageUrl(images[rehearsalImageDialog.index]);
+  render();
+}
+
+async function loadSupabaseRehearsalContext() {
+  if (!window.SupabaseDataService || !authSession) return;
+  try {
+    try {
+      activeSupabaseProduction = await window.SupabaseDataService.resolveActiveProduction();
+    } catch (error) {
+      if (error.code !== 'NO_ACTIVE_PRODUCTION') throw error;
+      await window.SupabaseDataService.ensureCurrentProductionMembership();
+      activeSupabaseProduction = await window.SupabaseDataService.resolveActiveProduction();
+    }
+    const membershipResult = await window.SupabaseDataService.getProductionMembers(activeSupabaseProduction.id);
+    const membership = (membershipResult.data || []).find(member => member.profile_id === authUser.id);
+    if (!membership) throw Object.assign(new Error('NO_ACTIVE_PRODUCTION'), { code: 'NO_ACTIVE_PRODUCTION' });
+    currentProductionRole = membership.role;
+    productionAccessStatus = 'READY';
+    const result = await window.SupabaseDataService.getRehearsalLogs(activeSupabaseProduction.id);
+    if (result.status !== 'PASS' && result.status !== 'EMPTY') throw Object.assign(new Error('READ_FAILED'), { code: result.status });
+    supabaseRehearsalLogs = (result.data || []).map(mapSupabaseRehearsalLog);
+    rehearsalSyncMessage = '';
+  } catch (error) {
+    activeSupabaseProduction = null;
+    currentProductionRole = null;
+    productionAccessStatus = 'ERROR';
+    supabaseRehearsalLogs = [];
+    rehearsalSyncMessage = error.code === 'NO_ACTIVE_PRODUCTION'
+      ? '연결된 Production을 확인해 주세요.'
+      : '공유 연습일지를 불러오지 못했습니다. 기존 로컬 기록은 그대로 유지됩니다.';
+    console.warn('[Supabase Rehearsal]', error.code || 'READ_FAILED');
+  }
+}
+
+function mapSupabaseTask(row) {
+  return {
+    taskId: row.id,
+    legacyId: row.legacy_id,
+    productionId: row.production_id,
+    part: row.part,
+    name: row.name,
+    assignee: row.assignee || '',
+    deadline: row.deadline || '',
+    status: row.status,
+    priority: row.priority,
+    prereqTaskId: row.prerequisite_task_id || null,
+    required: Boolean(row.required),
+    preShowCheck: Boolean(row.pre_show_check),
+    source: 'supabase',
+  };
+}
+
+async function loadSupabaseTaskContext() {
+  if (!window.SupabaseDataService || !authSession) return;
+  try {
+    const production = activeSupabaseProduction || await window.SupabaseDataService.resolveActiveProduction();
+    activeSupabaseProduction = production;
+    const result = await window.SupabaseDataService.getTasks(production.id);
+    if (result.status !== 'PASS' && result.status !== 'EMPTY') throw Object.assign(new Error('READ_FAILED'), { code: result.status });
+    state.tasks = (result.data || []).map(mapSupabaseTask);
+    usesSupabaseTasks = true;
+    taskSyncMessage = '';
+  } catch (error) {
+    usesSupabaseTasks = true;
+    state.tasks = [];
+    taskSyncMessage = '공유 업무를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    console.warn('[Supabase Tasks]', error.code || 'READ_FAILED');
+  }
+}
+
+function mapSupabaseEvent(row) {
+  const shortTime = value => value ? String(value).slice(0, 5) : '';
+  return {
+    id: row.id,
+    legacyId: row.legacy_id,
+    productionId: row.production_id,
+    title: row.title,
+    date: row.event_date,
+    startTime: shortTime(row.start_time),
+    endTime: shortTime(row.end_time),
+    type: row.type,
+    part: row.part || '',
+    location: row.location || '',
+    memo: row.memo || '',
+    source: 'supabase',
+  };
+}
+
+async function loadSupabaseEventContext() {
+  if (!window.SupabaseDataService || !authSession) return;
+  try {
+    const production = activeSupabaseProduction || await window.SupabaseDataService.resolveActiveProduction();
+    activeSupabaseProduction = production;
+    const result = await window.SupabaseDataService.getEvents(production.id);
+    if (result.status !== 'PASS' && result.status !== 'EMPTY') throw Object.assign(new Error('READ_FAILED'), { code: result.status });
+    state.events = (result.data || []).map(mapSupabaseEvent);
+    usesSupabaseEvents = true;
+    eventSyncMessage = '';
+  } catch (error) {
+    usesSupabaseEvents = true;
+    state.events = [];
+    eventSyncMessage = '공유 일정을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+    console.warn('[Supabase Events]', error.code || 'READ_FAILED');
+  }
+}
+
+/* Phase 1: Supabase는 READ 연결만 검증한다. UI state와 저장은 localStorage가 계속 담당한다. */
+function startSupabaseReadProbe() {
+  if (!window.SupabaseReadService || typeof window.SupabaseReadService.probeReads !== 'function') return;
+  window.SupabaseReadService.probeReads().then(result => {
+    window.__SUPABASE_READ_RESULT__ = result;
+    const summary = Object.fromEntries(Object.entries(result.reads || {}).map(([table, read]) => [table, read.status]));
+    console.info('[Supabase READ]', { client: result.client, session: result.session.status, tables: summary });
+  }).catch(error => {
+    window.__SUPABASE_READ_RESULT__ = { client: 'FAIL', error: { code: error.code || '', message: error.message } };
+    console.warn('[Supabase READ] 연결 검증 실패 — localStorage UI는 계속 동작합니다.', error.message);
+  });
 }
 
 /* ---------------- 렌더링 ---------------- */
@@ -167,6 +548,7 @@ async function init() {
 function render() {
   destroyHeroVideoLoop();
   const root = document.getElementById('app');
+  if (!authReady) { renderAuthLoading(); return; }
   const p = state.performance;
   const dDay = getDaysUntil(p.date, todayStr);
   const stage = getStage(dDay);
@@ -176,14 +558,81 @@ function render() {
     <div class="app-shell">
       ${renderTopNavigation()}
       <main class="app-main">
-        ${renderCurrentView(p, dDay, stage, risks)}
+        ${isLoginViewOpen && !authSession ? renderLoginView() : renderCurrentView(p, dDay, stage, risks)}
         ${renderFooter()}
       </main>
+      ${renderRehearsalImageDialog()}
     </div>
   `;
 
+  document.body?.classList.toggle('has-image-dialog', Boolean(rehearsalImageDialog));
   bindEvents();
-  if (currentView === 'home') initHeroVideoLoop();
+  if (isLoginViewOpen && !authSession) bindLoginEvents();
+  if (currentView === 'home' && !isLoginViewOpen) initHeroVideoLoop();
+  if (rehearsalImageDialog) document.querySelector('[data-image-dialog-close]')?.focus();
+}
+
+function renderLoginView() {
+  const isSignup = authMode === 'signup';
+  return `<section class="auth-shell auth-view-shell">
+    <section class="auth-panel" aria-labelledby="auth-title">
+      <span class="auth-kicker">JEONDAE THEATRE / PRODUCTION DESK</span>
+      <h1 id="auth-title" class="auth-wordmark">전대극회</h1>
+      <p class="auth-intro">${isSignup ? '부원 계정을 만들고 현재 공연 제작에 참여하세요.' : '공연 제작 기록은 등록된 부원만 열람할 수 있습니다.'}</p>
+      <form id="auth-login-form" class="auth-form">
+        ${isSignup ? '<div class="field"><label for="auth-name">이름</label><input id="auth-name" name="displayName" type="text" autocomplete="name" required></div>' : ''}
+        <div class="field"><label for="auth-email">이메일</label><input id="auth-email" name="email" type="email" autocomplete="username" required></div>
+        <div class="field"><label for="auth-password">비밀번호</label><input id="auth-password" name="password" type="password" autocomplete="current-password" required></div>
+        ${isSignup ? '<div class="field"><label for="auth-password-confirm">비밀번호 확인</label><input id="auth-password-confirm" name="passwordConfirm" type="password" autocomplete="new-password" required></div>' : ''}
+        <p id="auth-error" class="auth-error" role="alert" aria-live="polite">${escapeHtml(authMessage)}</p>
+        <button type="submit" class="auth-submit" ${authBusy ? 'disabled' : ''}>${authBusy ? '확인 중…' : (isSignup ? '회원가입' : '로그인')}</button>
+      </form>
+      <button type="button" class="auth-mode-toggle" data-auth-mode="${isSignup ? 'login' : 'signup'}">${isSignup ? '이미 계정이 있습니다 · 로그인' : '처음 오셨나요? · 회원가입'}</button>
+    </section>
+  </section>`;
+}
+
+function bindLoginEvents() {
+  const form = document.getElementById('auth-login-form');
+  if (!form) return;
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (authBusy) return;
+    const email = form.email.value.trim();
+    const password = form.password.value;
+    authBusy = true; authMessage = ''; render();
+    try {
+      if (authMode === 'signup') {
+        if (password !== form.passwordConfirm.value) throw Object.assign(new Error('비밀번호가 일치하지 않습니다.'), { code: 'VALIDATION_ERROR' });
+        const signup = await window.AuthService.signUp(form.displayName.value, email, password);
+        if (!signup.session || !signup.user) {
+          authMode = 'login'; authBusy = false;
+          authMessage = '회원가입은 처리되었지만 로그인 세션이 생성되지 않아 자동 참여를 진행하지 않았습니다.';
+          render(); return;
+        }
+        authSession = signup.session; authUser = signup.user;
+      } else {
+        const result = await window.AuthService.signIn(email, password);
+        authSession = result.session; authUser = result.user;
+      }
+      await loadCurrentProfile();
+      await loadSupabaseRehearsalContext();
+      await loadSupabaseTaskContext();
+      await loadSupabaseEventContext();
+      if (pendingProtectedView) currentView = pendingProtectedView;
+      pendingProtectedView = null;
+      isLoginViewOpen = false;
+      authBusy = false; render(); startSupabaseReadProbe();
+    } catch (error) {
+      authBusy = false;
+      authMessage = error.message || '로그인하지 못했습니다.';
+      render();
+      document.getElementById('auth-email')?.focus();
+    }
+  };
+  document.querySelectorAll('[data-auth-mode]').forEach(button => {
+    button.onclick = () => { authMode = button.dataset.authMode; authMessage = ''; render(); document.getElementById(authMode === 'signup' ? 'auth-name' : 'auth-email')?.focus(); };
+  });
 }
 
 function renderTopNavigation() {
@@ -197,19 +646,64 @@ function renderTopNavigation() {
       <nav id="top-shell-navigation" class="top-shell-navigation ${isTopNavOpen ? 'is-open' : ''}" aria-label="주요 메뉴">
         ${navigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${currentView === view ? 'is-active' : ''}" ${currentView === view ? 'aria-current="page"' : ''}>${label}</button>`).join('')}
       </nav>
-      <button type="button" class="top-shell-new-task" data-new-task>+ 새 업무</button>
+      <div class="top-shell-actions">
+        ${authSession ? `<button type="button" class="top-shell-new-task" data-new-task>+ 새 업무</button>
+        <div class="top-shell-account">
+          <span class="top-shell-account-name" title="${attr(authUser && authUser.email || '')}">${escapeHtml(authProfile && authProfile.display_name || (authUser && authUser.email ? authUser.email.split('@')[0] : 'Account'))}${currentProductionRole ? ` · ${escapeHtml(currentProductionRole)}` : ''}</span>
+          <button type="button" class="top-shell-logout" data-auth-logout>로그아웃</button>
+        </div>` : `<button type="button" class="top-shell-login" data-auth-login>로그인</button>`}
+      </div>
     </div>
   </header>`;
 }
 
 function renderCurrentView(p, dDay, stage, risks) {
+  if (!authSession && currentView !== 'home') return renderAuthRequiredView(currentView);
+  if (authSession && productionAccessStatus === 'ERROR' && currentView !== 'home') return renderMembershipErrorView();
   if (currentView === 'performance') return renderViewPage('performance', renderPerformanceForm(p, true));
   if (currentView === 'production') return renderViewPage('production', renderDashboard(p, stage) + renderRisks(risks));
   if (currentView === 'tasks') return renderViewPage('tasks', renderTaskForm(p) + renderTaskTable(p));
   if (currentView === 'calendar') return renderViewPage('calendar', renderCalendar(p));
   if (currentView === 'rehearsal') return renderViewPage('rehearsal', renderRehearsalArchive(p));
   if (currentView === 'preshow') return renderViewPage('preshow', renderPreShowChecklist());
-  return renderHomeDashboard(p, dDay, stage, risks);
+  return authSession && productionAccessStatus === 'READY' ? renderHomeDashboard(p, dDay, stage, risks) : renderPublicHome();
+}
+
+function renderPublicHome() {
+  return `<section class="motion-hero public-motion-hero" aria-labelledby="motion-hero-title">
+    <div class="hero-video-stage" aria-hidden="true">
+      <video id="motion-hero-video" class="motion-hero-video" muted playsinline preload="metadata"><source src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_083109_283f3553-e28f-428b-a723-d639c617eb2b.mp4" type="video/mp4"></video>
+      <div class="hero-video-overlay"></div>
+    </div>
+    <div class="motion-hero-foreground">
+      <div class="motion-hero-copy">
+        <span class="hero-production-label fade-rise">JEONDAE THEATRE / PRODUCTION ARCHIVE</span>
+        <h1 id="motion-hero-title" class="fade-rise-delay"><span>전대극회</span><em>무대에 오르기 전부터.</em></h1>
+        <p class="hero-description fade-rise-delay-2">공연을 만드는 사람들의 과정과 기록.<br>부원 전용 Production Desk에서 이어집니다.</p>
+        <div class="hero-actions fade-rise-delay-2"><button type="button" class="hero-dashboard-cta" data-auth-login>부원 로그인</button></div>
+      </div>
+      <div class="hero-footnote fade-rise-delay-2"><span>JEONDAE THEATRE ARCHIVE</span><span>EST. 1980</span></div>
+    </div>
+  </section>`;
+}
+
+function renderAuthRequiredView(view) {
+  const titles = { performance: '공연 정보', production: '제작 현황', tasks: '전체 업무', calendar: '일정', rehearsal: '연습일지', preshow: '공연 전 체크' };
+  return `<section class="protected-view" aria-labelledby="protected-view-title">
+    <p class="auth-kicker">MEMBERS ONLY / PRODUCTION DESK</p>
+    <h1 id="protected-view-title">부원 전용 페이지입니다.</h1>
+    <p>${escapeHtml(titles[view] || '이 페이지')}는 로그인 후 이용할 수 있습니다.</p>
+    <button type="button" data-auth-login>로그인</button>
+  </section>`;
+}
+
+function renderMembershipErrorView() {
+  return `<section class="membership-error-view" aria-labelledby="membership-error-title">
+    <p class="auth-kicker">PRODUCTION MEMBERSHIP</p>
+    <h1 id="membership-error-title">공연 참여 정보를 설정하지 못했습니다.</h1>
+    <p>잠시 후 다시 시도해 주세요. HOME은 계속 이용할 수 있습니다.</p>
+    <button type="button" data-retry-auto-join>다시 시도</button>
+  </section>`;
 }
 
 function renderViewPage(view, content) {
@@ -387,7 +881,8 @@ function renderTaskForm(p) {
       <label class="check-inline"><input type="checkbox" id="t-required"> 필수 업무</label>
       <label class="check-inline"><input type="checkbox" id="t-preshow"> 공연 전 체크리스트에 포함</label>
     </div>
-    <button type="button" id="add-task">업무 추가</button>
+    <p class="note task-sync-message" role="status">${escapeHtml(taskSyncMessage)}</p>
+    <button type="button" id="add-task" ${taskWriteBusy ? 'disabled' : ''}>${taskWriteBusy ? '저장 중…' : '업무 추가'}</button>
     </div>
   </section>
   `;
@@ -399,6 +894,7 @@ function renderTaskTable(p) {
   return `
   <section class="section task-ledger" id="section-tasks">
     <h2 class="table-section-title"><span class="table-section-label">PRODUCTION CALL SHEET</span>전체 업무 <span class="count">(${state.tasks.length})</span></h2>
+    <p class="note task-sync-message" role="status">${escapeHtml(taskSyncMessage)}</p>
     <div class="chip-row" style="margin-bottom:12px;">
       ${parts.map(part => `<button type="button" class="small ${currentPartFilter === part ? '' : 'ghost'}" data-filter-part="${attr(part)}">${escapeHtml(part)}</button>`).join('')}
     </div>
@@ -425,7 +921,7 @@ function renderTaskTable(p) {
             <td>${t.required ? '✓' : '—'}</td>
             <td>${t.preShowCheck ? '✓' : '—'}</td>
             <td class="mono">${t.taskId}</td>
-            <td><button type="button" class="small danger" data-del-task="${attr(t.taskId)}">삭제</button></td>
+            <td>${currentProductionRole === 'ADMIN' ? `<button type="button" class="small danger" data-del-task="${attr(t.taskId)}" ${taskDeleteInFlight.has(t.taskId) ? 'disabled' : ''}>${taskDeleteInFlight.has(t.taskId) ? '삭제 중…' : '삭제'}</button>` : '—'}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -435,21 +931,66 @@ function renderTaskTable(p) {
   `;
 }
 
-function getDashboardData(p, stage) {
-  const thisWeek = state.tasks.filter(t => {
-    if (t.status === '완료' || !t.deadline) return false;
-    const dd = getDaysUntil(t.deadline, todayStr);
+function getIncompleteTasks(tasks = state.tasks) {
+  return tasks.filter(task => task.status !== '완료');
+}
+
+function getTasksDueThisWeek(tasks = state.tasks) {
+  return getIncompleteTasks(tasks).filter(task => {
+    if (!task.deadline) return false;
+    const dd = getDaysUntil(task.deadline, todayStr);
     return dd !== null && dd >= 0 && dd <= 7;
   }).sort((a, b) => a.deadline.localeCompare(b.deadline));
-  const upcoming = state.tasks.filter(t => t.deadline && t.status !== '완료')
+}
+
+function getUpcomingDeadlines(tasks = state.tasks) {
+  return getIncompleteTasks(tasks).filter(task => task.deadline)
     .sort((a, b) => a.deadline.localeCompare(b.deadline));
-  const incomplete = state.tasks.filter(t => t.status !== '완료');
+}
+
+function getPartProgress(parts, tasks = state.tasks) {
+  const byPart = {};
+  parts.forEach(part => { byPart[part] = { total: 0, done: 0 }; });
+  tasks.forEach(task => {
+    if (!byPart[task.part]) return;
+    byPart[task.part].total++;
+    if (task.status === '완료') byPart[task.part].done++;
+  });
+  return byPart;
+}
+
+function getImportantIncompleteTasks(tasks = state.tasks) {
+  return getIncompleteTasks(tasks).slice().sort((a, b) => {
+    const rank = task => {
+      const dDay = task.deadline ? getDaysUntil(task.deadline, todayStr) : null;
+      return [
+        task.required ? 0 : 1,
+        task.priority === '높음' ? 0 : 1,
+        dDay !== null && dDay >= 0 && dDay <= 7 ? 0 : 1,
+        dDay !== null && dDay < 0 ? 0 : 1,
+        task.deadline || '9999-12-31',
+      ];
+    };
+    const aRank = rank(a);
+    const bRank = rank(b);
+    for (let index = 0; index < aRank.length; index++) {
+      if (aRank[index] < bRank[index]) return -1;
+      if (aRank[index] > bRank[index]) return 1;
+    }
+    return String(a.taskId || '').localeCompare(String(b.taskId || ''));
+  });
+}
+
+function getDashboardData(p, stage) {
+  const thisWeek = getTasksDueThisWeek();
+  const upcoming = getUpcomingDeadlines();
+  const incomplete = getIncompleteTasks();
+  const today = incomplete.filter(task => task.deadline === todayStr);
+  const important = getImportantIncompleteTasks();
   const completedCount = state.tasks.length - incomplete.length;
   const stageNumber = stage && stage.index >= 0 ? String(stage.index + 1).padStart(2, '0') : '—';
-  const byPart = {};
-  p.parts.forEach(part => { byPart[part] = { total: 0, done: 0 }; });
-  state.tasks.forEach(t => { if (byPart[t.part]) { byPart[t.part].total++; if (t.status === '완료') byPart[t.part].done++; } });
-  return { thisWeek, upcoming, incomplete, completedCount, stageNumber, byPart };
+  const byPart = getPartProgress(p.parts || []);
+  return { thisWeek, upcoming, incomplete, today, important, completedCount, stageNumber, byPart };
 }
 
 function renderPartStatus(byPart) {
@@ -523,12 +1064,6 @@ function initHeroVideoLoop() {
 
 function renderHomeDashboard(p, dDay, stage, risks) {
   const data = getDashboardData(p, stage);
-  const todayTasks = data.incomplete.filter(t => t.deadline === todayStr);
-  const important = data.incomplete.slice().sort((a, b) => {
-    if (Boolean(a.required) !== Boolean(b.required)) return a.required ? -1 : 1;
-    if ((a.priority === '높음') !== (b.priority === '높음')) return a.priority === '높음' ? -1 : 1;
-    return (a.deadline || '9999-12-31').localeCompare(b.deadline || '9999-12-31');
-  });
   return `
     ${renderMotionHero(p, dDay)}
     <section class="section home-kpi" id="home-dashboard">
@@ -542,20 +1077,30 @@ function renderHomeDashboard(p, dDay, stage, risks) {
     </section>
     <section class="section home-lists">
       <div class="grid2">
-        <div><h3>오늘 할 일</h3>${renderHomeTaskList(todayTasks.slice(0, 6), '오늘 마감인 업무가 없습니다.', true)}</div>
-        <div><h3>다가오는 마감</h3>${renderHomeTaskList(data.upcoming.slice(0, 6), '예정된 마감이 없습니다.')}</div>
+        <div><h3>오늘 할 일</h3>${renderHomeTaskList(data.today.slice(0, 6), '오늘 마감인 업무가 없습니다.', { showCheckbox: true })}</div>
+        <div><h3>다가오는 마감</h3>${renderHomeTaskList(data.upcoming.slice(0, 6), '예정된 마감이 없습니다.', { markOverdue: true })}<button type="button" class="home-view-all" data-view="tasks">전체 업무 보기 →</button></div>
       </div>
     </section>
     <section class="section home-status">
       <div class="grid2">
         <div><h3>파트별 진행률</h3>${renderPartStatus(data.byPart)}</div>
-        <div><h3>미완료 중요 업무</h3>${renderHomeTaskList(important.slice(0, 6), '미완료 업무가 없습니다.')}</div>
+        <div><h3>미완료 중요 업무</h3>${renderHomeTaskList(data.important.slice(0, 6), '미완료 업무가 없습니다.', { markOverdue: true })}</div>
       </div>
     </section>`;
 }
 
-function renderHomeTaskList(tasks, emptyMessage, showCheckbox = false) {
-  return tasks.length ? tasks.map(t => `<div class="home-task-row">${showCheckbox ? '<span class="task-checkbox" aria-hidden="true">□</span>' : ''}<span class="grow"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(t.part)} · ${t.assignee ? escapeHtml(t.assignee) : '미지정'}${t.required ? ' · 필수' : ''}</small></span><span class="mono">${t.deadline || '—'}</span><span class="badge ${t.priority}">${t.priority || ''}</span></div>`).join('') : `<div class="empty">${emptyMessage}</div>`;
+function renderHomeTaskList(tasks, emptyMessage, options = {}) {
+  const { showCheckbox = false, markOverdue = false } = options;
+  return tasks.length ? tasks.map(task => {
+    const overdue = markOverdue && task.deadline && getDaysUntil(task.deadline, todayStr) < 0;
+    return `<div class="home-task-row ${overdue ? 'is-overdue' : ''}">
+      ${showCheckbox ? '<span class="task-checkbox" aria-hidden="true">□</span>' : ''}
+      <span class="grow"><strong>${escapeHtml(task.name)}</strong><small>${escapeHtml(task.part)} · ${task.assignee ? escapeHtml(task.assignee) : '미지정'}${task.required ? ' · 필수' : ''}</small></span>
+      ${overdue ? '<span class="home-overdue-label">지연</span>' : ''}
+      <span class="badge ${task.status}">${escapeHtml(task.status)}</span>
+      <span class="mono">${task.deadline || '—'}</span>
+    </div>`;
+  }).join('') : `<div class="empty">${emptyMessage}</div>`;
 }
 
 function renderDashboard(p, stage) {
@@ -636,18 +1181,23 @@ function renderCalendarItem(item, compact = false) {
   return `<div class="calendar-item ${item.source}-item ${compact ? 'is-compact' : ''}">${content}</div>`;
 }
 
+function getCalendarGridDates(year, month) {
+  const firstDay = new Date(year, month, 1);
+  const sundayOffset = firstDay.getDay();
+  const gridStart = new Date(year, month, 1 - sundayOffset);
+  return Array.from({ length: 42 }, (_, index) =>
+    new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index)
+  );
+}
+
 function renderCalendar(p) {
   const year = calendarCursor.getFullYear();
   const month = calendarCursor.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const mondayOffset = (firstDay.getDay() + 6) % 7;
-  const gridStart = new Date(year, month, 1 - mondayOffset);
   const allItems = getCalendarItems(p);
   const itemsByDate = {};
   allItems.forEach(item => { (itemsByDate[item.date] ||= []).push(item); });
-  const weekdayLabels = ['월', '화', '수', '목', '금', '토', '일'];
-  const cells = Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+  const weekdayLabels = ['일', '월', '화', '수', '목', '금', '토'];
+  const cells = getCalendarGridDates(year, month).map(date => {
     const key = toDateKey(date.getFullYear(), date.getMonth(), date.getDate());
     const items = itemsByDate[key] || [];
     const visibleItems = items.slice(0, 3);
@@ -671,6 +1221,7 @@ function renderCalendar(p) {
       <button type="button" class="small ghost calendar-today" data-calendar-today>오늘</button>
       <button type="button" class="calendar-add" data-new-event>+ 새 일정 추가</button>
     </div>
+    ${eventSyncMessage && !isEventFormOpen ? `<p class="note event-sync-message" role="status">${escapeHtml(eventSyncMessage)}</p>` : ''}
     ${renderEventForm(p)}
     <div class="calendar-scroll" aria-label="${year}년 ${month + 1}월 제작 일정표">
       <div class="calendar-grid calendar-weekdays">${weekdayLabels.map(day => `<div>${day}</div>`).join('')}</div>
@@ -699,7 +1250,7 @@ function renderScheduleRow(item, showActions = false) {
     <span class="schedule-time">${escapeHtml(timeText)}</span>
     <span class="schedule-copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span>
     <span class="schedule-kind">${escapeHtml(item.type)}</span>
-    ${showActions && item.source === 'event' ? `<span class="schedule-actions"><button type="button" class="small ghost" data-edit-event="${attr(item.id)}">수정</button><button type="button" class="small danger" data-delete-event="${attr(item.id)}">삭제</button></span>` : ''}
+    ${showActions && item.source === 'event' ? `<span class="schedule-actions"><button type="button" class="small ghost" data-edit-event="${attr(item.id)}">수정</button>${currentProductionRole === 'ADMIN' ? `<button type="button" class="small danger" data-delete-event="${attr(item.id)}" ${eventDeleteInFlight.has(item.id) ? 'disabled' : ''}>${eventDeleteInFlight.has(item.id) ? '삭제 중…' : '삭제'}</button>` : ''}</span>` : ''}
   </div>`;
 }
 
@@ -719,17 +1270,22 @@ function renderEventForm(p) {
       <div class="field"><label for="e-location">장소</label><input id="e-location" type="text" value="${attr(value('location'))}" placeholder="예: 동아리방"></div>
       <div class="field event-memo"><label for="e-memo">메모</label><textarea id="e-memo" rows="2" placeholder="연결 장면, 준비물 등">${escapeHtml(value('memo'))}</textarea></div>
     </div>
-    <div class="event-form-actions"><button type="button" id="save-event">${event ? '일정 수정' : '일정 저장'}</button></div>
+    <p class="note event-sync-message" role="status">${escapeHtml(eventSyncMessage)}</p>
+    <div class="event-form-actions"><button type="button" id="save-event" ${eventWriteBusy ? 'disabled' : ''}>${eventWriteBusy ? '저장 중…' : (event ? '일정 수정' : '일정 저장')}</button></div>
   </div>`;
 }
 
 /* ---------------- Rehearsal Archive ---------------- */
 
 function getSortedRehearsalLogs() {
-  return rehearsalLogs.slice().sort((a, b) =>
+  return [...rehearsalLogs, ...supabaseRehearsalLogs].sort((a, b) =>
     String(b.date || '').localeCompare(String(a.date || '')) ||
     String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
   );
+}
+
+function findRehearsalLogById(logId) {
+  return [...rehearsalLogs, ...supabaseRehearsalLogs].find(log => log.id === logId);
 }
 
 function getFilteredRehearsalLogs() {
@@ -743,7 +1299,7 @@ function getFilteredRehearsalLogs() {
 }
 
 function renderRehearsalArchive(p) {
-  const selected = rehearsalLogs.find(log => log.id === selectedRehearsalLogId);
+  const selected = findRehearsalLogById(selectedRehearsalLogId);
   if (rehearsalArchiveMode === 'detail' && selected) return renderRehearsalDetail(selected);
   if (rehearsalArchiveMode === 'create' || (rehearsalArchiveMode === 'edit' && selected)) {
     return renderRehearsalForm(p, rehearsalArchiveMode === 'edit' ? selected : null);
@@ -758,11 +1314,12 @@ function renderRehearsalHeading(title, caption = 'REHEARSAL ARCHIVE') {
 
 function renderRehearsalList() {
   const logs = getFilteredRehearsalLogs();
+  const total = rehearsalLogs.length + supabaseRehearsalLogs.length;
   const hasFilter = rehearsalCategoryFilter !== '전체' || rehearsalSearchQuery.trim();
   return `<section class="section section-rehearsal" id="section-rehearsal">
     ${renderRehearsalHeading('연습일지')}
     <div class="rehearsal-list-toolbar">
-      <p><span class="archive-count">${String(rehearsalLogs.length).padStart(2, '0')}</span> NOTES IN ARCHIVE</p>
+      <p><span class="archive-count">${String(total).padStart(2, '0')}</span> NOTES IN ARCHIVE</p>
       <button type="button" data-new-rehearsal-log>+ 글쓰기</button>
     </div>
     <form class="rehearsal-search" id="rehearsal-search-form" role="search">
@@ -795,29 +1352,196 @@ function renderRehearsalDetail(log) {
       <dl><div><dt>DATE</dt><dd>${formatDisplayDate(log.date)}</dd></div><div><dt>AUTHOR</dt><dd>${escapeHtml(log.author)}</dd></div><div><dt>CATEGORY</dt><dd>${escapeHtml(log.category || '기타')}</dd></div></dl>
     </header>
     <div class="rehearsal-content">${escapeHtml(log.content).replace(/\n/g, '<br>')}</div>
+    ${renderRehearsalImageItems(log, false)}
     ${tags.length ? `<div class="rehearsal-detail-tags">${tags.map(tag => `<span>#${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
     <div class="rehearsal-detail-actions"><button type="button" class="ghost" data-edit-rehearsal-log="${attr(log.id)}">수정</button><button type="button" class="danger" data-delete-rehearsal-log="${attr(log.id)}">삭제</button></div>
   </section>`;
 }
 
 function renderRehearsalForm(p, log = null) {
-  const value = (key, fallback = '') => log && log[key] !== undefined ? log[key] : fallback;
+  const draft = rehearsalFormDraft;
+  const value = (key, fallback = '') => draft && draft[key] !== undefined ? draft[key] : (log && log[key] !== undefined ? log[key] : fallback);
   const tags = Array.isArray(value('tags', [])) ? value('tags', []).map(tag => `#${tag}`).join(' ') : '';
   const authors = [...new Set((p.participants || []).map(person => person.name).filter(Boolean))];
+  const usesSupabaseIdentity = !log || log.source === 'supabase';
+  const authorValue = usesSupabaseIdentity ? (authProfile && authProfile.display_name || '') : value('author');
   return `<section class="section section-rehearsal rehearsal-editor" id="section-rehearsal">
     ${renderRehearsalHeading(log ? '연습일지 수정' : '새 연습 기록', log ? 'EDIT REHEARSAL NOTE' : 'NEW REHEARSAL NOTE')}
     <form id="rehearsal-log-form">
       <div class="field rehearsal-title-field"><label for="r-title">제목 *</label><input id="r-title" type="text" value="${attr(value('title'))}" required placeholder="오늘의 연습을 한 문장으로 기록하세요"></div>
       <div class="grid2">
-        <div class="field"><label for="r-author">작성자 *</label><input id="r-author" type="text" list="rehearsal-authors" value="${attr(value('author'))}" required autocomplete="name"><datalist id="rehearsal-authors">${authors.map(name => `<option value="${attr(name)}"></option>`).join('')}</datalist></div>
+        <div class="field"><label for="r-author">작성자 *</label><input id="r-author" type="text" list="rehearsal-authors" value="${attr(authorValue)}" required autocomplete="name" ${usesSupabaseIdentity ? 'readonly aria-readonly="true"' : ''}><datalist id="rehearsal-authors">${authors.map(name => `<option value="${attr(name)}"></option>`).join('')}</datalist></div>
         <div class="field"><label for="r-date">연습일 *</label><input id="r-date" type="date" value="${attr(value('date', todayStr))}" required></div>
       </div>
       <fieldset class="rehearsal-category-field"><legend>분류</legend><div>${REHEARSAL_CATEGORIES.map(category => `<label><input type="radio" name="rehearsal-category" value="${attr(category)}" ${value('category', '전체연습') === category ? 'checked' : ''}><span>${category}</span></label>`).join('')}</div></fieldset>
       <div class="field"><label for="r-content">내용 *</label><textarea id="r-content" rows="12" required placeholder="오늘 연습에서는...">${escapeHtml(value('content'))}</textarea></div>
       <div class="field"><label for="r-tags">태그 <span class="field-translation">/ 띄어쓰기 또는 쉼표로 구분</span></label><input id="r-tags" type="text" value="${attr(tags)}" placeholder="#전체연습 #런스루"></div>
-      <div class="rehearsal-form-actions"><button type="button" class="ghost" data-rehearsal-cancel>취소</button><button type="submit">${log ? '수정 완료' : '등록하기'}</button></div>
+      ${usesSupabaseIdentity ? `<section class="rehearsal-image-editor" aria-labelledby="rehearsal-image-heading">
+        <div class="rehearsal-image-editor-head"><div><h3 id="rehearsal-image-heading">이미지 첨부</h3><p>JPEG, PNG, WebP · 장당 8MB 이하 · 최대 12장</p></div><label class="button-like" for="rehearsal-image-input">+ 사진 추가</label></div>
+        <input class="visually-hidden" id="rehearsal-image-input" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+        ${renderRehearsalImageItems(log, true)}
+      </section>` : ''}
+      ${rehearsalSyncMessage ? `<p class="note" role="status">${escapeHtml(rehearsalSyncMessage)}</p>` : ''}
+      <div class="rehearsal-form-actions"><button type="button" class="ghost" data-rehearsal-cancel>취소</button><button type="submit" ${rehearsalWriteBusy ? 'disabled' : ''}>${rehearsalWriteBusy ? '저장 중…' : (log ? '수정 완료' : '등록하기')}</button></div>
     </form>
   </section>`;
+}
+
+function setPendingImageStatus(item, status, message = '') {
+  item.status = status;
+  item.message = message;
+  const element = document.querySelector(`[data-pending-image="${item.localId}"] .rehearsal-image-status`);
+  if (element) element.textContent = `${imageStatusLabel(status)}${message ? ` · ${message}` : ''}`;
+}
+
+async function uploadPendingRehearsalImage(item, log, sortOrder) {
+  const storage = window.RehearsalImageStorageService;
+  let uploadedPath = '';
+  try {
+    setPendingImageStatus(item, 'processing');
+    const processed = await storage.processImage(item.file);
+    const path = storage.buildRehearsalImagePath({
+      productionId: log.productionId,
+      rehearsalLogId: log.id,
+      uploaderId: authUser.id,
+      extension: processed.extension,
+    });
+    const metadata = storage.buildImageMetadataPayload({
+      rehearsalLogId: log.id,
+      productionId: log.productionId,
+      uploadedBy: authUser.id,
+      storagePath: path,
+      originalFilename: item.file.name,
+      mimeType: processed.contentType,
+      fileSize: processed.blob.size,
+      sortOrder,
+    });
+    setPendingImageStatus(item, 'uploading');
+    await storage.uploadRehearsalImage({ blob: processed.blob, path, contentType: processed.contentType });
+    uploadedPath = path;
+    const saved = await window.SupabaseDataService.createRehearsalLogImage(metadata);
+    try {
+      Object.assign(saved, await storage.createSignedImageUrl(saved.storage_path), { signedStatus: 'ready' });
+    } catch (error) {
+      Object.assign(saved, { signedUrl: '', expiresAt: '', signedStatus: 'failed' });
+      console.warn('[Rehearsal Image] signed URL failed after upload', saved.id, error.code || 'SIGNED_URL_FAILED');
+    }
+    setPendingImageStatus(item, 'complete');
+    return { status: 'success', item, saved };
+  } catch (error) {
+    if (uploadedPath) {
+      try {
+        await storage.deleteRehearsalImage(uploadedPath);
+      } catch (cleanupError) {
+        console.error('[Rehearsal Image] orphan cleanup failed', uploadedPath, cleanupError.code || 'STORAGE_DELETE_FAILED');
+      }
+    }
+    setPendingImageStatus(item, 'failed', error.message || '이미지를 처리하지 못했습니다.');
+    return { status: 'failed', item, errorCode: error.code || 'IMAGE_PROCESS_FAILED' };
+  }
+}
+
+async function uploadPendingRehearsalImages(log) {
+  const existing = rehearsalImagesByLog.get(log.id) || [];
+  const results = [];
+  for (let index = 0; index < pendingRehearsalImages.length; index += 1) {
+    results.push(await uploadPendingRehearsalImage(pendingRehearsalImages[index], log, existing.length + index));
+  }
+  const successful = results.filter(result => result.status === 'success');
+  rehearsalImagesByLog.set(log.id, [...existing, ...successful.map(result => result.saved)]);
+  successful.forEach(result => window.RehearsalImageStorageService.revokeImagePreview(result.item.previewUrl));
+  pendingRehearsalImages = results.filter(result => result.status === 'failed').map(result => result.item);
+  return { successCount: successful.length, failedCount: pendingRehearsalImages.length };
+}
+
+async function moveSavedRehearsalImage(logId, imageId, direction) {
+  const images = rehearsalImagesByLog.get(logId) || [];
+  const from = images.findIndex(image => image.id === imageId);
+  const to = direction === 'prev' ? from - 1 : from + 1;
+  if (from < 0 || to < 0 || to >= images.length) return;
+  [images[from], images[to]] = [images[to], images[from]];
+  try {
+    await Promise.all([
+      window.SupabaseDataService.updateRehearsalLogImageOrder(images[from].id, from),
+      window.SupabaseDataService.updateRehearsalLogImageOrder(images[to].id, to),
+    ]);
+    images.forEach((image, index) => { image.sort_order = index; });
+    rehearsalSyncMessage = '';
+  } catch (error) {
+    rehearsalSyncMessage = error.message || '이미지 순서를 변경하지 못했습니다.';
+    await loadRehearsalImages(logId);
+  }
+  render();
+}
+
+async function deleteSavedRehearsalImage(logId, imageId) {
+  const requestKey = `image:${imageId}`;
+  if (rehearsalDeleteInFlight.has(requestKey)) return;
+  rehearsalDeleteInFlight.add(requestKey);
+  const cachedImages = rehearsalImagesByLog.get(logId) || [];
+  try {
+    const metadata = await window.SupabaseDataService.getRehearsalLogImageById(imageId);
+    if (metadata.status === 'EMPTY') {
+      rehearsalImagesByLog.set(logId, cachedImages.filter(entry => entry.id !== imageId));
+      rehearsalSyncMessage = '';
+      return;
+    }
+    if (metadata.status !== 'PASS' || !metadata.data[0]) throw new Error('IMAGE_METADATA_READ_FAILED');
+    const image = metadata.data[0];
+    await window.RehearsalImageStorageService.deleteRehearsalImage(image.storage_path);
+    await window.SupabaseDataService.deleteRehearsalLogImage(image.id);
+    rehearsalImagesByLog.set(logId, cachedImages.filter(entry => entry.id !== image.id));
+    rehearsalSyncMessage = '';
+  } catch (error) {
+    rehearsalSyncMessage = error.code === 'STORAGE_DELETE_FAILED'
+      ? '이미지 파일을 삭제하지 못했습니다. 다시 시도해 주세요.'
+      : '이미지 삭제 상태를 확인하지 못했습니다. 다시 시도해 주세요.';
+    console.error('[Rehearsal Image] delete incomplete', imageId, error.code || error.message || 'DELETE_FAILED');
+    await loadRehearsalImages(logId);
+  } finally {
+    rehearsalDeleteInFlight.delete(requestKey);
+    render();
+  }
+}
+
+async function deleteSupabaseRehearsalLog(logId) {
+  const requestKey = `log:${logId}`;
+  if (rehearsalDeleteInFlight.has(requestKey)) return false;
+  rehearsalDeleteInFlight.add(requestKey);
+  try {
+    const logResult = await window.SupabaseDataService.getRehearsalLogById(logId);
+    if (logResult.status === 'EMPTY') {
+      supabaseRehearsalLogs = supabaseRehearsalLogs.filter(log => log.id !== logId);
+      rehearsalImagesByLog.delete(logId);
+      return true;
+    }
+    if (logResult.status !== 'PASS') throw new Error('LOG_READ_FAILED');
+    const imageResult = await window.SupabaseDataService.getRehearsalLogImages(logId);
+    if (imageResult.status !== 'PASS' && imageResult.status !== 'EMPTY') throw new Error('IMAGE_METADATA_READ_FAILED');
+    const images = imageResult.data || [];
+    const cleanup = await window.RehearsalImageStorageService.deleteRehearsalImages(images.map(image => image.storage_path));
+    const failed = cleanup.filter(result => result.status === 'failed');
+    if (failed.length) {
+      console.warn('[Rehearsal Log] Storage cleanup incomplete', { logId, failedPaths: failed.map(result => result.path) });
+      throw Object.assign(new Error('STORAGE_CLEANUP_INCOMPLETE'), { code: 'STORAGE_DELETE_FAILED' });
+    }
+    await window.SupabaseDataService.deleteRehearsalLog(logId);
+    const cascadeCheck = await window.SupabaseDataService.getRehearsalLogImages(logId);
+    if (cascadeCheck.status !== 'EMPTY') console.warn('[Rehearsal Log] metadata cascade verification', cascadeCheck.status);
+    supabaseRehearsalLogs = supabaseRehearsalLogs.filter(log => log.id !== logId);
+    rehearsalImagesByLog.delete(logId);
+    rehearsalSyncMessage = '';
+    return true;
+  } catch (error) {
+    rehearsalSyncMessage = error.code === 'STORAGE_DELETE_FAILED'
+      ? '일부 이미지 파일을 삭제하지 못해 연습일지 삭제를 중단했습니다. 다시 시도해 주세요.'
+      : '연습일지를 삭제하지 못했습니다. 다시 시도해 주세요.';
+    console.error('[Rehearsal Log] delete incomplete', logId, error.code || error.message || 'DELETE_FAILED');
+    await loadRehearsalImages(logId);
+    return false;
+  } finally {
+    rehearsalDeleteInFlight.delete(requestKey);
+  }
 }
 
 function renderPreShowChecklist() {
@@ -850,13 +1574,55 @@ function renderFooter() {
 /* ---------------- 이벤트 바인딩 ---------------- */
 
 function bindEvents() {
+  const logoutButton = document.querySelector('[data-auth-logout]');
+  if (logoutButton) logoutButton.onclick = async () => {
+    if (authBusy) return;
+    authBusy = true;
+    try {
+      await window.AuthService.signOut();
+      authSession = null; authUser = null; authProfile = null; authProfileStatus = 'UNKNOWN'; authMessage = '';
+      activeSupabaseProduction = null; supabaseRehearsalLogs = []; rehearsalImagesByLog.clear();
+      usesSupabaseTasks = false; state.tasks = legacyLocalTasks.map(task => ({ ...task })); taskSyncMessage = '';
+      usesSupabaseEvents = false; state.events = legacyLocalEvents.map(event => ({ ...event })); eventSyncMessage = '';
+      clearPendingRehearsalImages(); rehearsalImageDialog = null; rehearsalArchiveMode = 'list';
+      selectedRehearsalLogId = null; pendingProtectedView = null; isLoginViewOpen = false;
+      productionAccessStatus = 'UNKNOWN'; currentProductionRole = null; authMode = 'login'; currentView = 'home';
+    } catch (error) {
+      authMessage = error.message || '로그아웃하지 못했습니다.';
+    } finally {
+      authBusy = false; render();
+    }
+  };
   const p = state.performance;
 
   document.querySelectorAll('[data-view]').forEach(btn => {
-    btn.onclick = () => { currentView = btn.dataset.view; isTopNavOpen = false; render(); };
+    btn.onclick = () => {
+      if (btn.dataset.view !== 'rehearsal' && pendingRehearsalImages.length) clearPendingRehearsalImages();
+      currentView = btn.dataset.view; isLoginViewOpen = false; isTopNavOpen = false; render();
+    };
   });
   document.querySelectorAll('[data-new-task]').forEach(btn => {
-    btn.onclick = () => { currentView = 'tasks'; isTaskFormOpen = true; isTopNavOpen = false; render(); };
+    btn.onclick = () => {
+      if (!authSession) { pendingProtectedView = 'tasks'; isLoginViewOpen = true; isTopNavOpen = false; render(); return; }
+      currentView = 'tasks'; isTaskFormOpen = true; isTopNavOpen = false; render();
+    };
+  });
+  document.querySelectorAll('[data-auth-login]').forEach(btn => {
+    btn.onclick = () => {
+      if (currentView !== 'home') pendingProtectedView = currentView;
+      isLoginViewOpen = true; isTopNavOpen = false; authMessage = ''; render();
+      document.getElementById('auth-email')?.focus();
+    };
+  });
+  document.querySelectorAll('[data-retry-auto-join]').forEach(button => {
+    button.onclick = async () => {
+      button.disabled = true; button.textContent = '확인 중…';
+      await loadSupabaseRehearsalContext();
+      if (productionAccessStatus === 'READY') {
+        await loadSupabaseTaskContext(); await loadSupabaseEventContext();
+      }
+      render();
+    };
   });
   document.querySelectorAll('[data-topnav-toggle]').forEach(btn => {
     btn.onclick = () => { isTopNavOpen = !isTopNavOpen; render(); };
@@ -876,20 +1642,38 @@ function bindEvents() {
   });
 
   document.querySelectorAll('[data-new-rehearsal-log]').forEach(btn => {
-    btn.onclick = () => { selectedRehearsalLogId = null; rehearsalArchiveMode = 'create'; render(); };
+    btn.onclick = () => { clearPendingRehearsalImages(); rehearsalFormDraft = null; rehearsalSyncMessage = ''; selectedRehearsalLogId = null; rehearsalArchiveMode = 'create'; render(); };
   });
   document.querySelectorAll('[data-rehearsal-list], [data-rehearsal-cancel]').forEach(btn => {
-    btn.onclick = () => { rehearsalArchiveMode = 'list'; selectedRehearsalLogId = null; render(); };
+    btn.onclick = () => { clearPendingRehearsalImages(); rehearsalFormDraft = null; rehearsalArchiveMode = 'list'; selectedRehearsalLogId = null; render(); };
   });
   document.querySelectorAll('[data-rehearsal-detail]').forEach(btn => {
-    btn.onclick = () => { selectedRehearsalLogId = btn.dataset.rehearsalDetail; rehearsalArchiveMode = 'detail'; render(); };
+    btn.onclick = async () => {
+      const target = findRehearsalLogById(btn.dataset.rehearsalDetail);
+      if (target && target.source === 'supabase') await loadRehearsalImages(target.id);
+      selectedRehearsalLogId = btn.dataset.rehearsalDetail; rehearsalArchiveMode = 'detail'; render();
+    };
   });
   document.querySelectorAll('[data-edit-rehearsal-log]').forEach(btn => {
-    btn.onclick = () => { selectedRehearsalLogId = btn.dataset.editRehearsalLog; rehearsalArchiveMode = 'edit'; render(); };
+    btn.onclick = async () => {
+      clearPendingRehearsalImages(); rehearsalFormDraft = null; rehearsalSyncMessage = '';
+      const target = findRehearsalLogById(btn.dataset.editRehearsalLog);
+      if (target && target.source === 'supabase') await loadRehearsalImages(target.id);
+      selectedRehearsalLogId = btn.dataset.editRehearsalLog; rehearsalArchiveMode = 'edit'; render();
+    };
   });
   document.querySelectorAll('[data-delete-rehearsal-log]').forEach(btn => {
-    btn.onclick = () => {
+    btn.onclick = async () => {
       if (!window.confirm('이 연습일지를 삭제하시겠습니까?\n삭제된 글은 복구할 수 없습니다.')) return;
+      const target = findRehearsalLogById(btn.dataset.deleteRehearsalLog);
+      if (target && target.source === 'supabase') {
+        if (rehearsalDeleteInFlight.has(`log:${target.id}`)) return;
+        btn.disabled = true; btn.textContent = '삭제 중…';
+        const deleted = await deleteSupabaseRehearsalLog(target.id);
+        if (deleted) { selectedRehearsalLogId = null; rehearsalArchiveMode = 'list'; }
+        render();
+        return;
+      }
       rehearsalLogs = rehearsalLogs.filter(log => log.id !== btn.dataset.deleteRehearsalLog);
       selectedRehearsalLogId = null; rehearsalArchiveMode = 'list';
       saveRehearsalLogs(); render();
@@ -907,8 +1691,125 @@ function bindEvents() {
     rehearsalSearchQuery = document.getElementById('rehearsal-search-input').value;
     render();
   };
+  const imageInput = document.getElementById('rehearsal-image-input');
+  if (imageInput) imageInput.onchange = event => {
+    const files = Array.from(event.target.files || []);
+    const selectedLog = findRehearsalLogById(selectedRehearsalLogId);
+    const savedCount = selectedLog ? (rehearsalImagesByLog.get(selectedLog.id) || []).length : 0;
+    try {
+      window.RehearsalImageStorageService.validateSelectedFiles(files, savedCount + pendingRehearsalImages.length);
+      captureRehearsalFormDraft();
+      files.forEach(file => pendingRehearsalImages.push({
+        localId: crypto.randomUUID(), file,
+        previewUrl: window.RehearsalImageStorageService.createImagePreview(file),
+        status: 'ready', message: '',
+      }));
+      rehearsalSyncMessage = '';
+    } catch (error) {
+      rehearsalSyncMessage = error.message || '이미지를 추가하지 못했습니다.';
+    }
+    event.target.value = '';
+    render();
+  };
+  document.querySelectorAll('[data-remove-pending-image]').forEach(btn => {
+    btn.onclick = () => {
+      captureRehearsalFormDraft();
+      const item = pendingRehearsalImages.find(entry => entry.localId === btn.dataset.removePendingImage);
+      if (item) window.RehearsalImageStorageService.revokeImagePreview(item.previewUrl);
+      pendingRehearsalImages = pendingRehearsalImages.filter(entry => entry.localId !== btn.dataset.removePendingImage);
+      render();
+    };
+  });
+  document.querySelectorAll('[data-image-move]').forEach(btn => {
+    btn.onclick = async () => {
+      const [scope, direction] = btn.dataset.imageMove.split('-');
+      if (scope === 'saved') {
+        await moveSavedRehearsalImage(selectedRehearsalLogId, btn.dataset.imageId, direction);
+        return;
+      }
+      captureRehearsalFormDraft();
+      const from = pendingRehearsalImages.findIndex(item => item.localId === btn.dataset.imageId);
+      const to = direction === 'prev' ? from - 1 : from + 1;
+      if (from >= 0 && to >= 0 && to < pendingRehearsalImages.length) {
+        [pendingRehearsalImages[from], pendingRehearsalImages[to]] = [pendingRehearsalImages[to], pendingRehearsalImages[from]];
+      }
+      render();
+    };
+  });
+  document.querySelectorAll('[data-delete-saved-image]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!window.confirm('이 이미지를 삭제하시겠습니까?')) return;
+      if (rehearsalDeleteInFlight.has(`image:${btn.dataset.deleteSavedImage}`)) return;
+      btn.disabled = true; btn.textContent = '삭제 중…';
+      await deleteSavedRehearsalImage(selectedRehearsalLogId, btn.dataset.deleteSavedImage);
+    };
+  });
+  document.querySelectorAll('[data-retry-image]').forEach(btn => {
+    btn.onclick = async () => {
+      const log = findRehearsalLogById(selectedRehearsalLogId);
+      const item = pendingRehearsalImages.find(entry => entry.localId === btn.dataset.retryImage);
+      if (!log || !item) return;
+      const result = await uploadPendingRehearsalImage(item, log, (rehearsalImagesByLog.get(log.id) || []).length);
+      if (result.status === 'success') {
+        rehearsalImagesByLog.set(log.id, [...(rehearsalImagesByLog.get(log.id) || []), result.saved]);
+        window.RehearsalImageStorageService.revokeImagePreview(item.previewUrl);
+        pendingRehearsalImages = pendingRehearsalImages.filter(entry => entry !== item);
+        rehearsalSyncMessage = '이미지 업로드가 완료되었습니다.';
+      }
+      render();
+    };
+  });
+  document.querySelectorAll('[data-open-image-dialog]').forEach(btn => {
+    btn.onclick = () => showRehearsalImageDialog(selectedRehearsalLogId, btn.dataset.openImageDialog);
+  });
+  const imageDialog = document.querySelector('.image-dialog');
+  const imageBackdrop = document.querySelector('[data-image-dialog-backdrop]');
+  const closeImageDialogButton = document.querySelector('[data-image-dialog-close]');
+  if (closeImageDialogButton) closeImageDialogButton.onclick = closeRehearsalImageDialog;
+  if (imageBackdrop) imageBackdrop.onclick = event => {
+    if (event.target === imageBackdrop) closeRehearsalImageDialog();
+  };
+  const previousImageButton = document.querySelector('[data-image-dialog-prev]');
+  const nextImageButton = document.querySelector('[data-image-dialog-next]');
+  if (previousImageButton) previousImageButton.onclick = () => stepRehearsalImageDialog(-1);
+  if (nextImageButton) nextImageButton.onclick = () => stepRehearsalImageDialog(1);
+  if (imageDialog) imageDialog.onkeydown = event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeRehearsalImageDialog(); return; }
+    if (event.key === 'ArrowLeft') { event.preventDefault(); stepRehearsalImageDialog(-1); return; }
+    if (event.key === 'ArrowRight') { event.preventDefault(); stepRehearsalImageDialog(1); return; }
+    if (event.key !== 'Tab') return;
+    const focusable = [...imageDialog.querySelectorAll('button:not([disabled])')];
+    if (!focusable.length) { event.preventDefault(); imageDialog.focus(); return; }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
+  document.querySelectorAll('[data-signed-image-path]').forEach(image => {
+    image.onerror = async () => {
+      const attempts = Number(image.dataset.signedRefreshAttempts || 0);
+      if (image.dataset.refreshingSignedUrl === 'true') return;
+      if (attempts >= 1) {
+        image.hidden = true;
+        image.closest('.rehearsal-gallery-thumb, .image-dialog-stage')?.classList.add('has-image-error');
+        return;
+      }
+      image.dataset.refreshingSignedUrl = 'true';
+      image.dataset.signedRefreshAttempts = String(attempts + 1);
+      try {
+        const refreshed = await window.RehearsalImageStorageService.refreshSignedImageUrl(image.dataset.signedImagePath);
+        image.src = refreshed.signedUrl;
+      } catch (error) {
+        console.warn('[Rehearsal Image] signed URL refresh failed', error.code || 'SIGNED_URL_FAILED');
+        image.hidden = true;
+        image.closest('.rehearsal-gallery-thumb, .image-dialog-stage')?.classList.add('has-image-error');
+      } finally {
+        image.dataset.refreshingSignedUrl = 'false';
+      }
+    };
+  });
   const rehearsalLogForm = document.getElementById('rehearsal-log-form');
-  if (rehearsalLogForm) rehearsalLogForm.onsubmit = event => {
+  if (rehearsalLogForm) rehearsalLogForm.onsubmit = async event => {
     event.preventDefault();
     if (!rehearsalLogForm.reportValidity()) return;
     const titleInput = document.getElementById('r-title');
@@ -917,17 +1818,59 @@ function bindEvents() {
     if (!titleInput.value.trim()) { titleInput.focus(); return; }
     if (!authorInput.value.trim()) { authorInput.focus(); return; }
     if (!contentInput.value.trim()) { contentInput.focus(); return; }
-    const existing = rehearsalLogs.find(log => log.id === selectedRehearsalLogId);
+    const existing = findRehearsalLogById(selectedRehearsalLogId);
     const timestamp = new Date().toISOString();
     const rawTags = document.getElementById('r-tags').value;
     const tags = [...new Set(rawTags.split(/[\s,]+/).map(tag => tag.replace(/^#+/, '').trim()).filter(Boolean))];
-    const logData = {
-      id: existing ? existing.id : nextRehearsalLogId(),
+    const fields = {
       title: titleInput.value.trim(),
-      author: authorInput.value.trim(),
-      date: document.getElementById('r-date').value,
+      rehearsalDate: document.getElementById('r-date').value,
       category: rehearsalLogForm.querySelector('[name="rehearsal-category"]:checked').value,
       content: contentInput.value.trim(),
+      tags,
+    };
+    if (!existing || existing.source === 'supabase') {
+      if (!window.SupabaseDataService || !activeSupabaseProduction) {
+        rehearsalSyncMessage = '활성 Production을 확인한 뒤 다시 시도해 주세요.';
+        render();
+        return;
+      }
+      rehearsalWriteBusy = true; rehearsalSyncMessage = '';
+      const submitButton = rehearsalLogForm.querySelector('[type="submit"]');
+      if (submitButton) { submitButton.disabled = true; submitButton.textContent = '저장 중…'; }
+      try {
+        const row = existing
+          ? await window.SupabaseDataService.updateRehearsalLog(existing.id, fields)
+          : await window.SupabaseDataService.createRehearsalLog({ productionId: activeSupabaseProduction.id, ...fields });
+        const mapped = mapSupabaseRehearsalLog(row);
+        const index = supabaseRehearsalLogs.findIndex(log => log.id === mapped.id);
+        if (index >= 0) supabaseRehearsalLogs[index] = mapped;
+        else supabaseRehearsalLogs.push(mapped);
+        selectedRehearsalLogId = mapped.id;
+        const uploadResult = await uploadPendingRehearsalImages(mapped);
+        rehearsalFormDraft = null;
+        if (uploadResult.failedCount) {
+          rehearsalSyncMessage = `사진 ${uploadResult.successCount}장은 저장되었지만 ${uploadResult.failedCount}장 업로드에 실패했습니다.`;
+          rehearsalArchiveMode = 'edit';
+        } else {
+          rehearsalSyncMessage = uploadResult.successCount ? `사진 ${uploadResult.successCount}장과 연습일지가 저장되었습니다.` : '';
+          rehearsalArchiveMode = 'detail';
+        }
+        setSaveStatus('Supabase에 저장됨 · ' + new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }));
+      } catch (error) {
+        rehearsalSyncMessage = error.message || '연습일지를 저장하지 못했습니다.';
+      } finally {
+        rehearsalWriteBusy = false; render();
+      }
+      return;
+    }
+    const logData = {
+      id: existing ? existing.id : nextRehearsalLogId(),
+      title: fields.title,
+      author: authorInput.value.trim(),
+      date: fields.rehearsalDate,
+      category: fields.category,
+      content: fields.content,
       tags,
       createdAt: existing ? existing.createdAt : timestamp,
       updatedAt: timestamp,
@@ -971,15 +1914,26 @@ function bindEvents() {
     btn.onclick = () => { editingEventId = btn.dataset.editEvent; isEventFormOpen = true; render(); };
   });
   document.querySelectorAll('[data-delete-event]').forEach(btn => {
-    btn.onclick = () => {
-      state.events = state.events.filter(event => event.id !== btn.dataset.deleteEvent);
-      if (editingEventId === btn.dataset.deleteEvent) { editingEventId = null; isEventFormOpen = false; }
-      render(); saveState();
+    btn.onclick = async () => {
+      const eventId = btn.dataset.deleteEvent;
+      if (eventDeleteInFlight.has(eventId)) return;
+      eventDeleteInFlight.add(eventId); eventSyncMessage = ''; render();
+      try {
+        await window.SupabaseDataService.deleteEvent(eventId);
+        state.events = state.events.filter(event => event.id !== eventId);
+        if (editingEventId === eventId) { editingEventId = null; isEventFormOpen = false; }
+      } catch (error) {
+        eventSyncMessage = error.message || '일정을 삭제하지 못했습니다.';
+        console.warn('[Supabase Events] delete failed', error.code || 'DELETE_FAILED');
+      } finally {
+        eventDeleteInFlight.delete(eventId); render();
+      }
     };
   });
 
   const saveEventBtn = document.getElementById('save-event');
-  if (saveEventBtn) saveEventBtn.onclick = () => {
+  if (saveEventBtn) saveEventBtn.onclick = async () => {
+    if (eventWriteBusy || !usesSupabaseEvents || !activeSupabaseProduction) return;
     const titleInput = document.getElementById('e-title');
     const dateInput = document.getElementById('e-date');
     const title = titleInput.value.trim();
@@ -987,7 +1941,7 @@ function bindEvents() {
     if (!title) { titleInput.focus(); return; }
     if (!date) { dateInput.focus(); return; }
     const eventData = {
-      id: editingEventId || nextEventId(), title, date,
+      title, eventDate: date,
       startTime: document.getElementById('e-start').value,
       endTime: document.getElementById('e-end').value,
       type: document.getElementById('e-type').value,
@@ -995,13 +1949,33 @@ function bindEvents() {
       location: document.getElementById('e-location').value.trim(),
       memo: document.getElementById('e-memo').value.trim(),
     };
-    const index = state.events.findIndex(event => event.id === editingEventId);
-    if (index >= 0) state.events[index] = eventData;
-    else state.events.push(eventData);
-    selectedCalendarDate = date;
-    calendarCursor = new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, 1);
-    editingEventId = null; isEventFormOpen = false;
-    render(); saveState();
+    eventWriteBusy = true; eventSyncMessage = '';
+    saveEventBtn.disabled = true; saveEventBtn.textContent = '저장 중…';
+    let savedSuccessfully = false;
+    try {
+      const row = editingEventId
+        ? await window.SupabaseDataService.updateEvent(editingEventId, eventData)
+        : await window.SupabaseDataService.createEvent({ productionId: activeSupabaseProduction.id, ...eventData });
+      const mapped = mapSupabaseEvent(row);
+      const index = state.events.findIndex(event => event.id === mapped.id);
+      if (index >= 0) state.events[index] = mapped;
+      else state.events.push(mapped);
+      selectedCalendarDate = date;
+      calendarCursor = new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, 1);
+      editingEventId = null; isEventFormOpen = false;
+      savedSuccessfully = true;
+    } catch (error) {
+      eventSyncMessage = error.message || '일정을 저장하지 못했습니다.';
+      console.warn('[Supabase Events] save failed', error.code || 'CREATE_FAILED');
+    } finally {
+      eventWriteBusy = false;
+      if (savedSuccessfully) render();
+      else {
+        saveEventBtn.disabled = false;
+        saveEventBtn.textContent = editingEventId ? '일정 수정' : '일정 저장';
+        document.querySelectorAll('.event-sync-message').forEach(message => { message.textContent = eventSyncMessage; });
+      }
+    }
   };
 
   const ft = document.getElementById('f-title');
@@ -1040,30 +2014,74 @@ function bindEvents() {
   });
 
   const addTaskBtn = document.getElementById('add-task');
-  if (addTaskBtn) addTaskBtn.onclick = () => {
+  if (addTaskBtn) addTaskBtn.onclick = async () => {
+    if (taskWriteBusy || !usesSupabaseTasks || !activeSupabaseProduction) return;
     const name = document.getElementById('t-name').value.trim();
     if (!name) return;
-    state.tasks.push({
-      taskId: nextTaskId(),
-      part: document.getElementById('t-part').value,
-      name,
+    const input = {
+      productionId: activeSupabaseProduction.id,
+      part: document.getElementById('t-part').value, name,
       assignee: document.getElementById('t-assignee').value,
       deadline: document.getElementById('t-deadline').value,
-      status: '대기',
-      priority: document.getElementById('t-priority').value,
-      prereqTaskId: document.getElementById('t-prereq').value || null,
+      status: '대기', priority: document.getElementById('t-priority').value,
+      prerequisiteTaskId: document.getElementById('t-prereq').value || null,
       required: document.getElementById('t-required').checked,
       preShowCheck: document.getElementById('t-preshow').checked,
-    });
-    render(); saveState();
+    };
+    taskWriteBusy = true; taskSyncMessage = '';
+    addTaskBtn.disabled = true; addTaskBtn.textContent = '저장 중…';
+    let createdSuccessfully = false;
+    try {
+      const created = await window.SupabaseDataService.createTask(input);
+      state.tasks.push(mapSupabaseTask(created));
+      isTaskFormOpen = false;
+      createdSuccessfully = true;
+    } catch (error) {
+      taskSyncMessage = error.message || '업무를 저장하지 못했습니다.';
+      console.warn('[Supabase Tasks] create failed', error.code || 'CREATE_FAILED');
+    } finally {
+      taskWriteBusy = false;
+      if (createdSuccessfully) render();
+      else {
+        addTaskBtn.disabled = false; addTaskBtn.textContent = '업무 추가';
+        document.querySelectorAll('.task-sync-message').forEach(message => { message.textContent = taskSyncMessage; });
+      }
+    }
   };
   document.querySelectorAll('[data-del-task]').forEach(b => {
-    b.onclick = () => { state.tasks = state.tasks.filter(t => t.taskId !== b.dataset.delTask); render(); saveState(); };
+    b.onclick = async () => {
+      const taskId = b.dataset.delTask;
+      if (taskDeleteInFlight.has(taskId)) return;
+      taskDeleteInFlight.add(taskId); taskSyncMessage = ''; render();
+      try {
+        await window.SupabaseDataService.deleteTask(taskId);
+        state.tasks = state.tasks.filter(task => task.taskId !== taskId);
+      } catch (error) {
+        taskSyncMessage = error.message || '업무를 삭제하지 못했습니다.';
+        console.warn('[Supabase Tasks] delete failed', error.code || 'DELETE_FAILED');
+      } finally {
+        taskDeleteInFlight.delete(taskId); render();
+      }
+    };
   });
   document.querySelectorAll('[data-status]').forEach(el => {
-    el.onchange = () => {
+    el.onchange = async () => {
       const t = state.tasks.find(x => x.taskId === el.dataset.status);
-      t.status = el.value; render(); saveState();
+      if (!t || taskWriteBusy) return;
+      const previousStatus = t.status;
+      taskWriteBusy = true; taskSyncMessage = ''; el.disabled = true;
+      try {
+        const updated = await window.SupabaseDataService.updateTask(t.taskId, {
+          ...t, status: el.value, prerequisiteTaskId: t.prereqTaskId,
+        });
+        Object.assign(t, mapSupabaseTask(updated));
+      } catch (error) {
+        t.status = previousStatus;
+        taskSyncMessage = error.message || '업무를 수정하지 못했습니다.';
+        console.warn('[Supabase Tasks] update failed', error.code || 'UPDATE_FAILED');
+      } finally {
+        taskWriteBusy = false; render();
+      }
     };
   });
   document.querySelectorAll('[data-filter-part]').forEach(b => {
@@ -1084,4 +2102,4 @@ function formatDisplayDate(dateStr) {
   return match ? `${match[1]}. ${match[2]}. ${match[3]}.` : String(dateStr);
 }
 
-init();
+window.__APP_INIT_PROMISE__ = init();

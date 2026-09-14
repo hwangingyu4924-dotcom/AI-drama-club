@@ -112,6 +112,7 @@ REHEARSAL NOTE / 018
 - 분류
 - 내용
 - 태그
+- 이미지 첨부(선택, 최대 12장)
 
 ```text
 NEW REHEARSAL NOTE
@@ -194,25 +195,15 @@ Phase 1 목표:
 - 분류 필터
 - 기본 검색
 
-## 8. 저장 방식 — Phase 2
+## 8. 저장 방식 — Supabase 확장
 
-실제 부원들이 각자 기기에서 같은 글을 보고 작성하려면 localStorage만으로는 부족하다.
+공유 연습일지는 확정된 Supabase Auth, `profiles`, `production_members`, `rehearsal_logs` 구조를 사용한다. 이미지 파일은 DB나 localStorage에 넣지 않고 private Supabase Storage bucket `rehearsal-images`에 저장한다.
 
-Phase 2 후보:
-- Supabase
-- Firebase
-- 기타 간단한 DB + 인증
-
-Phase 2 고려 기능:
-- 여러 사용자 공유
-- 로그인
-- 작성자 권한
-- 댓글
-- 첨부 이미지
-- 작성자별 글 보기
-- 공연별 아카이브
-
-이번 1차 구현에서는 백엔드를 도입하지 않는다.
+- DB: `rehearsal_log_images`에 metadata와 `storage_path` 저장
+- Storage: 실제 JPEG, PNG, WebP object 저장
+- 기존 `rehearsalLogs` localStorage는 migration 승인 전까지 삭제하거나 변경하지 않는다.
+- 기존 localStorage 연습일지에 image path를 임의로 추가하지 않는다.
+- 이미지 기능은 Rehearsal Log Supabase WRITE 연결과 DB log UUID 확보 이후 활성화한다.
 
 ## 9. 검색 및 필터
 
@@ -507,7 +498,7 @@ Mobile에서도 다음 기능이 가능해야 한다.
 - 다중 사용자 로그인
 - Supabase/Firebase 연결
 - 댓글
-- 사진 첨부
+- Task/Event 이미지 첨부로 Storage service 확장
 - `확인` 표시
 - 연습 참가자 기록
 - Calendar 연습 일정 연결
@@ -529,3 +520,109 @@ Mobile에서도 다음 기능이 가능해야 한다.
 **전대극회의 디지털 연습일지 아카이브**
 
 를 만드는 것을 최종 목표로 한다.
+
+## 28. 이미지 첨부 데이터 모델
+
+이미지는 `rehearsal_logs.image_paths` JSON 배열이 아니라 별도 `rehearsal_log_images` 테이블로 관리한다.
+
+필드:
+
+- `id`: image metadata UUID
+- `rehearsal_log_id`: 연결된 연습일지 UUID
+- `production_id`: production 격리와 권한 검증
+- `uploaded_by`: 업로드한 profile UUID
+- `storage_path`: private Storage object path, UNIQUE
+- `original_filename`: 표시·진단용 원본 파일명
+- `mime_type`: JPEG, PNG, WebP만 허용
+- `file_size`: 8MB 이하
+- `sort_order`: 앞/뒤 버튼 정렬 순서
+- `created_at`, `updated_at`: 생성 및 변경 시각
+
+대표 이미지와 캡션 필드는 초기 schema에 포함하지 않는다.
+
+```text
+productions
+  └── rehearsal_logs
+        └── rehearsal_log_images
+
+profiles
+  └── uploaded_by
+```
+
+log 삭제 시 image metadata는 FK cascade로 삭제할 수 있지만 Storage object는 별도로 정리해야 한다. DB와 Storage는 단일 트랜잭션이 아니므로 실패 시 보상 삭제와 orphan 정리 절차를 사용한다.
+
+Task/Event 첨부 가능성은 유지하지만 이번 버전에서 범용 `attachments` 테이블은 도입하지 않는다. 이미지 처리 service와 path generator만 향후 재사용 가능하게 분리한다.
+
+## 29. 이미지 Storage 및 권한
+
+- bucket: private `rehearsal-images`
+- path: `<production_uuid>/<log_uuid>/<uploader_uuid>/<file_uuid>.<ext>`
+- 원본 파일명은 path에 사용하지 않는다.
+- 상세 이미지 URL은 10분 유효한 Signed URL로 발급하고 만료 시 재발급한다.
+- Anonymous는 DB image row와 Storage object에 접근할 수 없다.
+- MEMBER는 참여 중인 production 이미지를 조회하고 연습일지 작성 시 업로드할 수 있다.
+- MEMBER는 자신이 업로드했거나 자신이 작성한 연습일지의 이미지만 관리할 수 있다.
+- ADMIN은 해당 production의 이미지를 모두 관리할 수 있다.
+- Storage policy는 path만 신뢰하지 않고 실제 production membership과 log-production 관계를 검증한다.
+- 브라우저에는 publishable key만 사용하며 service role 또는 secret을 넣지 않는다.
+
+## 30. 이미지 파일 제한과 처리
+
+- 파일당 최대 8MB
+- 글당 최대 12장
+- 한 번에 최대 6장 선택·업로드
+- 허용 형식: JPEG, PNG, WebP
+- HEIC와 HEIC 변환은 초기 버전에서 지원하지 않는다.
+- 업로드 전에 브라우저에서 최대 긴 변 2400px로 축소한다.
+- 압축 품질은 약 0.82를 기준으로 한다.
+- 각 object filename은 새 UUID로 생성해 충돌과 원본명 노출을 방지한다.
+
+## 31. 이미지 글쓰기 및 상세 UX
+
+초기 버전에 포함:
+
+- `+ 사진 추가`
+- 업로드 전 local preview
+- 개별 삭제
+- 키보드로 사용할 수 있는 앞/뒤 버튼 순서 변경
+- 파일별 진행·실패 상태
+- 일부 실패 시 성공한 이미지는 유지하고 실패 항목만 재시도
+- 본문 아래 반응형 gallery
+- 이미지 확대 dialog
+- ESC 닫기, focus 관리, 이전/다음 이동
+- Signed URL 만료 시 재발급
+
+초기 버전에서 제외:
+
+- 대표 이미지
+- 캡션
+- Drag & Drop 정렬
+- HEIC 변환
+
+권장 저장 흐름:
+
+```text
+연습일지 입력
+→ 이미지 선택·검증·축소·압축·미리보기
+→ rehearsal log 저장 및 UUID 확보
+→ private Storage 업로드
+→ image metadata 저장
+→ 성공 image row 재조회
+→ 상세 gallery 표시
+```
+
+Storage 업로드 후 metadata 저장이 실패하면 object 삭제를 시도한다. 일부 파일만 실패한 경우 성공 파일을 롤백하지 않는다.
+
+## 32. 이미지 업로드 구현 Phase
+
+1. **Phase 1 — 명세 갱신:** 승인된 DB, Storage, 권한, 제한과 UX를 공식 문서에 반영한다.
+2. **Phase 2 — Database SQL 준비:** image table, 관계, CHECK, index와 timestamp SQL을 준비한다.
+3. **Phase 3 — RLS + Storage 정책 준비:** metadata RLS, private bucket과 object 정책을 준비한다.
+4. **Phase 4 — 이미지 처리 Service:** 검증, 축소·압축, preview, UUID path, upload/delete, Signed URL을 분리한다.
+5. **Phase 5 — Rehearsal Log Supabase WRITE 연결:** log-first 저장과 DB UUID 확보를 구현한다.
+6. **Phase 6 — 글쓰기 이미지 UI:** 선택, 미리보기, 삭제, 앞뒤 정렬과 부분 실패 재시도를 구현한다.
+7. **Phase 7 — Gallery + Dialog:** 반응형 gallery와 접근 가능한 확대 dialog를 구현한다.
+8. **Phase 8 — 삭제 / Cleanup:** 개별·log 삭제와 Storage orphan 보상 정리를 구현한다.
+9. **Phase 9 — Regression / Responsive QA:** 권한, 실패, 파일 경계, 반응형과 기존 기능을 검증한다.
+
+각 Phase는 기존 localStorage, 기존 `rehearsal_logs`, Auth/RLS와 다른 App View의 회귀가 없을 때만 완료한다.
