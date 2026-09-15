@@ -53,6 +53,7 @@ async function run() {
   await context.window.__APP_INIT_PROMISE__;
 
   assert.ok(appRoot.innerHTML.includes('class="motion-hero public-motion-hero"'), '익명 최초 진입은 공개 HOME이어야 한다');
+  assert.ok(appRoot.innerHTML.includes('CNU THEATRE') && !appRoot.innerHTML.includes('JEONDAE THEATRE'), '익명 HOME 영문 branding 불일치');
   assert.ok(appRoot.innerHTML.includes('data-auth-login'), '익명 Top Navigation에 로그인 버튼이 있어야 한다');
   assert.ok(!appRoot.innerHTML.includes('비공개 공연') && !appRoot.innerHTML.includes('비공개 업무'), '공개 HOME에 private local data를 렌더하면 안 된다');
   assert.ok(!appRoot.innerHTML.includes('id="home-dashboard"'), '익명 HOME에 Production Dashboard를 노출하면 안 된다');
@@ -66,6 +67,7 @@ async function run() {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.ok(appRoot.innerHTML.includes('data-auth-logout'), '로그인 후 계정 UI가 표시되어야 한다');
   assert.ok(appRoot.innerHTML.includes('view-page-rehearsal'), '로그인 후 원래 보호 View로 복귀해야 한다');
+  assert.ok(appRoot.innerHTML.includes('CNU THEATRE') && !appRoot.innerHTML.includes('JEONDAE THEATRE'), '인증 UI 영문 branding 불일치');
 
   await authCallback('SIGNED_OUT', null);
   await new Promise(resolve => setTimeout(resolve, 0));

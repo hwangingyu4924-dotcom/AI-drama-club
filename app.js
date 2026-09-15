@@ -235,7 +235,7 @@ async function init() {
 
 function renderAuthLoading() {
   const root = document.getElementById('app');
-  root.innerHTML = `<main class="auth-shell"><div class="auth-panel"><span class="auth-kicker">JEONDAE THEATRE / PRODUCTION DESK</span><strong class="auth-wordmark">전대극회</strong><p class="auth-loading" role="status">세션을 확인하고 있습니다.</p></div></main>`;
+  root.innerHTML = `<main class="auth-shell"><div class="auth-panel"><span class="auth-kicker">CNU THEATRE / PRODUCTION DESK</span><strong class="auth-wordmark">전대극회</strong><p class="auth-loading" role="status">세션을 확인하고 있습니다.</p></div></main>`;
 }
 
 async function initializeAuth() {
@@ -733,7 +733,7 @@ function renderLoginView() {
   const isSignup = authMode === 'signup';
   return `<section class="auth-shell auth-view-shell">
     <section class="auth-panel" aria-labelledby="auth-title">
-      <span class="auth-kicker">JEONDAE THEATRE / PRODUCTION DESK</span>
+      <span class="auth-kicker">CNU THEATRE / PRODUCTION DESK</span>
       <h1 id="auth-title" class="auth-wordmark">전대극회</h1>
       <p class="auth-intro">${isSignup ? '부원 계정을 만들고 현재 공연 제작에 참여하세요.' : '공연 제작 기록을 관리하려면 부원 계정으로 로그인하세요.'}</p>
       <form id="auth-login-form" class="auth-form">
@@ -838,7 +838,7 @@ function renderPublicHome() {
     </div>
     <div class="motion-hero-foreground">
       <div class="motion-hero-copy">
-        <span class="hero-production-label fade-rise">JEONDAE THEATRE / PRODUCTION ARCHIVE</span>
+        <span class="hero-production-label fade-rise">CNU THEATRE / PRODUCTION ARCHIVE</span>
         <h1 id="motion-hero-title" class="fade-rise-delay"><span>전대극회</span><em>무대에 오르기 전부터.</em></h1>
         <p class="hero-description fade-rise-delay-2">공연 제작 과정은 누구나 열람할 수 있고,<br>부원은 로그인 후 기록과 업무를 관리합니다.</p>
         <div class="hero-actions fade-rise-delay-2"><button type="button" class="hero-dashboard-cta" data-auth-login>부원 로그인</button></div>
@@ -971,7 +971,7 @@ function renderHeader(p, dDay, stage) {
   return `
   <header class="masthead home-project-header" aria-label="공연 제작 데스크 개요">
     <div class="masthead-main">
-      <div class="masthead-kicker"><span>JEONDAE THEATRE</span><span class="accent">/</span><span>PRODUCTION DESK</span></div>
+      <div class="masthead-kicker"><span>CNU THEATRE</span><span class="accent">/</span><span>PRODUCTION DESK</span></div>
       <h1 id="show-title">${escapeHtml(p.title) || '(작품명 미입력)'}</h1>
       <div class="sub">${escapeHtml(p.venue) || '공연장 미정'} · ${formatDisplayDate(p.date) || '공연일 미정'} · 제작 ${escapeHtml(p.status || '준비중')}</div>
     </div>
@@ -1867,7 +1867,7 @@ function renderPreShowChecklist() {
 function renderFooter() {
   return `
   <footer class="site-footer">
-    <div class="site-footer-identity">JEONDAE THEATRE <span>/</span> ACT II</div>
+    <div class="site-footer-identity">CNU THEATRE <span>/</span> ACT II</div>
     <div class="site-footer-meta">PRODUCTION ARCHIVE · LOCAL FIRST · REV. 01</div>
   </footer>
   `;
