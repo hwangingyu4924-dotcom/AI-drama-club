@@ -117,6 +117,16 @@ const assertions = `
   if (nextRehearsalLogId() !== 'LOG-003') throw new Error('연습일지 ID 생성 실패');
   rehearsalArchiveMode = 'list'; rehearsalCategoryFilter = '전체'; rehearsalSearchQuery = '';
   if (!renderRehearsalArchive(state.performance).includes('전체 런')) throw new Error('목록 렌더 실패');
+  const internalRehearsalId = '043f6790-65ac-4adb-808c-a4346d017bbf';
+  rehearsalLogs = [{ id: internalRehearsalId, title: 'UUID 비노출 테스트', author: '황인규', date: '2026-09-15', category: '전체연습', content: '테스트', tags: [] }];
+  const privateIdList = renderRehearsalArchive(state.performance);
+  if (!privateIdList.includes('data-rehearsal-detail="' + internalRehearsalId + '"')) throw new Error('CRUD용 내부 연습일지 식별자 누락');
+  if (privateIdList.includes('<span class="rehearsal-index">' + internalRehearsalId)) throw new Error('내부 연습일지 UUID visible text 노출');
+  if (!privateIdList.includes('<span class="rehearsal-index">전체연습</span>')) throw new Error('의미 있는 연습일지 분류 표시 누락');
+  rehearsalLogs = [
+    { id: 'LOG-001', title: '첫 연습', author: '홍길동', date: '2026-09-01', category: '연기', content: '장면 연습', tags: ['장면1'], createdAt: '2026-09-01T10:00:00', updatedAt: '2026-09-01T10:00:00' },
+    { id: 'LOG-002', title: '전체 런', author: '김연출', date: '2026-09-10', category: '전체연습', content: '처음부터 끝까지', tags: ['런스루'], createdAt: '2026-09-10T10:00:00', updatedAt: '2026-09-10T10:00:00' },
+  ];
   if (!renderRehearsalDetail({ ...rehearsalLogs[0], content: '<script>bad()</script>' }).includes('&lt;script&gt;')) throw new Error('본문 이스케이프 실패');
   const projectBefore = storage.get(LS_KEY);
   saveRehearsalLogs();

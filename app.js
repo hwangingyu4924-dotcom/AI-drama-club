@@ -1633,7 +1633,7 @@ function renderRehearsalList() {
     <div class="rehearsal-list" aria-live="polite">
       ${logs.length ? logs.map(log => `<article class="rehearsal-list-item">
         <button type="button" data-rehearsal-detail="${attr(log.id)}" aria-label="${attr(log.title)} 연습일지 읽기">
-          <span class="rehearsal-index">${escapeHtml(String(log.id || '').replace('LOG-', ''))} / ${escapeHtml(log.category || '기타')}</span>
+          <span class="rehearsal-index">${escapeHtml(log.category || '기타')}</span>
           <strong>${escapeHtml(log.title)}</strong>
           <span class="rehearsal-list-meta">${escapeHtml(log.author)} · ${formatDisplayDate(log.date)}</span>
           ${Array.isArray(log.tags) && log.tags.length ? `<span class="rehearsal-list-tags">${log.tags.slice(0, 3).map(tag => `#${escapeHtml(tag)}`).join(' ')}</span>` : ''}
