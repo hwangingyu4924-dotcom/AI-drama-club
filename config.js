@@ -9,4 +9,5 @@
 window.AI_DRAMA_CONFIG = Object.freeze({
   SUPABASE_URL: 'https://oevqyhkifpyazphnumqg.supabase.co',
   SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_clUNIEIkPHKttNvWatHRsA_Vxfpma5U',
+  PUBLIC_ARCHIVE_SLUG: 'spring-holding-hands-2026',
 });

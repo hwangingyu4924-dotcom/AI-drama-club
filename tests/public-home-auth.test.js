@@ -58,8 +58,8 @@ async function run() {
   assert.ok(!appRoot.innerHTML.includes('id="home-dashboard"'), '익명 HOME에 Production Dashboard를 노출하면 안 된다');
 
   vm.runInContext("currentView = 'rehearsal'; render();", context);
-  assert.ok(appRoot.innerHTML.includes('부원 전용 페이지입니다.'), '보호 View는 인증 게이트를 표시해야 한다');
-  assert.ok(!appRoot.innerHTML.includes('rehearsal-archive'), '익명 사용자에게 보호 콘텐츠를 렌더하면 안 된다');
+  assert.ok(appRoot.innerHTML.includes('현재 공개된 공연 아카이브가 없습니다.'), '비활성 archive는 안전한 empty UI를 표시해야 한다');
+  assert.ok(!appRoot.innerHTML.includes('비공개 공연') && !appRoot.innerHTML.includes('비공개 업무'), '익명 사용자에게 localStorage private 콘텐츠를 렌더하면 안 된다');
 
   vm.runInContext("pendingProtectedView = 'rehearsal'; isLoginViewOpen = true;", context);
   await authCallback('SIGNED_IN', { user: authUser });
@@ -69,7 +69,7 @@ async function run() {
 
   await authCallback('SIGNED_OUT', null);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.ok(appRoot.innerHTML.includes('class="motion-hero public-motion-hero"'), '로그아웃 후 공개 HOME으로 이동해야 한다');
+  assert.ok(appRoot.innerHTML.includes('현재 공개된 공연 아카이브가 없습니다.'), '로그아웃 후 보던 public page를 read-only 상태로 유지해야 한다');
   assert.strictEqual(storage.get('ppa-state-v1'), projectState, '인증 UX 변경이 localStorage를 수정하면 안 된다');
   console.log('Public HOME / 보호 View 인증 UX 테스트 통과');
 }

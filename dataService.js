@@ -66,6 +66,69 @@
     }
   }
 
+  function requirePublicSlug(value) {
+    const slug = String(value || '').trim();
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+      throw dataError('VALIDATION_ERROR', '공개 아카이브 경로가 올바르지 않습니다.');
+    }
+    return slug;
+  }
+
+  async function callPublicArchiveRpc(rpcName, args) {
+    try {
+      const client = await getClient();
+      const { data, error } = await client.rpc(rpcName, args);
+      if (error) return { rpc: rpcName, ...classifyReadError(error), data: null };
+      const rows = Array.isArray(data) ? data : (data ? [data] : []);
+      return { rpc: rpcName, status: rows.length ? 'PASS' : 'EMPTY', data: rows, error: null };
+    } catch (error) {
+      return { rpc: rpcName, ...classifyReadError(error), data: null };
+    }
+  }
+
+  function getPublicArchiveProduction(slug) {
+    return callPublicArchiveRpc('get_public_archive_production', {
+      requested_public_slug: requirePublicSlug(slug),
+    });
+  }
+
+  function getPublicArchiveTasks(slug) {
+    return callPublicArchiveRpc('get_public_archive_tasks', {
+      requested_public_slug: requirePublicSlug(slug),
+    });
+  }
+
+  function getPublicArchiveEvents(slug) {
+    return callPublicArchiveRpc('get_public_archive_events', {
+      requested_public_slug: requirePublicSlug(slug),
+    });
+  }
+
+  function getPublicArchiveRehearsalLogs(slug) {
+    return callPublicArchiveRpc('get_public_archive_rehearsal_logs', {
+      requested_public_slug: requirePublicSlug(slug),
+    });
+  }
+
+  function getPublicArchiveRehearsalImages(slug, rehearsalPublicId) {
+    return callPublicArchiveRpc('get_public_archive_rehearsal_images', {
+      requested_public_slug: requirePublicSlug(slug),
+      requested_rehearsal_public_id: requireUuid(rehearsalPublicId, '공개 연습일지 ID'),
+    });
+  }
+
+  function buildPublicRehearsalImageUrl(slug, rehearsalPublicId, imagePublicId) {
+    const config = global.AI_DRAMA_CONFIG || {};
+    const baseUrl = String(config.SUPABASE_URL || '').replace(/\/+$/, '');
+    if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(baseUrl)) {
+      throw dataError('CONFIG_ERROR', '공개 이미지 서비스 설정을 확인해 주세요.');
+    }
+    const productionSlug = requirePublicSlug(slug);
+    const rehearsalId = requireUuid(rehearsalPublicId, '공개 연습일지 ID');
+    const imageId = requireUuid(imagePublicId, '공개 이미지 ID');
+    return `${baseUrl}/functions/v1/public-rehearsal-image?production=${encodeURIComponent(productionSlug)}&rehearsal=${encodeURIComponent(rehearsalId)}&image=${encodeURIComponent(imageId)}`;
+  }
+
   function getProductions() {
     return selectRows('productions', 'id,title,performance_date,venue,venue_info,project_start_date,status,parts,rehearsal_availability,created_by,created_at,updated_at');
   }
@@ -85,15 +148,17 @@
     return selectRows('events', 'id,production_id,legacy_id,title,event_date,start_time,end_time,type,part,location,memo,created_at,updated_at', query => productionId ? query.eq('production_id', productionId) : query);
   }
 
+  const REHEARSAL_AUTHOR_DISPLAY_NAME_MAX_LENGTH = 80;
+
   function getRehearsalLogs(productionId) {
-    return selectRows('rehearsal_logs', 'id,production_id,legacy_id,title,rehearsal_date,author,author_profile_id,category,content,tags,created_at,updated_at', query => {
+    return selectRows('rehearsal_logs', 'id,production_id,legacy_id,title,rehearsal_date,author,author_display_name,author_profile_id,category,content,tags,created_at,updated_at', query => {
       const filtered = productionId ? query.eq('production_id', productionId) : query;
       return filtered.order('rehearsal_date', { ascending: false }).order('created_at', { ascending: false });
     });
   }
 
   function getRehearsalLogById(logId) {
-    return selectRows('rehearsal_logs', 'id,production_id,legacy_id,title,rehearsal_date,author,author_profile_id,category,content,tags,created_at,updated_at', query => query.eq('id', requireUuid(logId, '연습일지 ID')).limit(1));
+    return selectRows('rehearsal_logs', 'id,production_id,legacy_id,title,rehearsal_date,author,author_display_name,author_profile_id,category,content,tags,created_at,updated_at', query => query.eq('id', requireUuid(logId, '연습일지 ID')).limit(1));
   }
 
   function getRehearsalLogImages(logId) {
@@ -124,18 +189,20 @@
     return normalized.toLowerCase();
   }
 
-  function normalizeLogInput(input) {
+  function normalizeLogInput(input, defaultAuthorDisplayName = '') {
     const title = String(input && input.title || '').trim();
     const rehearsalDate = String(input && input.rehearsalDate || '').trim();
     const category = String(input && input.category || '').trim();
     const content = String(input && input.content || '').trim();
+    const authorDisplayName = String(input && input.authorDisplayName || defaultAuthorDisplayName || '').trim();
     const tags = Array.isArray(input && input.tags)
       ? [...new Set(input.tags.map(tag => String(tag || '').trim()).filter(Boolean))]
       : null;
-    if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(rehearsalDate) || !content || !tags || !REHEARSAL_CATEGORIES.includes(category)) {
+    if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(rehearsalDate) || !content || !tags || !REHEARSAL_CATEGORIES.includes(category)
+      || !authorDisplayName || authorDisplayName.length > REHEARSAL_AUTHOR_DISPLAY_NAME_MAX_LENGTH) {
       throw dataError('VALIDATION_ERROR', '제목, 연습일, 분류, 본문과 태그 형식을 확인해 주세요.');
     }
-    return { title, rehearsal_date: rehearsalDate, category, content, tags };
+    return { title, rehearsal_date: rehearsalDate, category, content, tags, author_display_name: authorDisplayName };
   }
 
   function classifyWriteError(error, operation) {
@@ -369,14 +436,14 @@
       const production = await resolveActiveProduction(input && input.productionId);
       const identity = await requireCurrentIdentity(client);
       const payload = {
-        ...normalizeLogInput(input),
+        ...normalizeLogInput(input, identity.displayName),
         production_id: production.id,
         author_profile_id: identity.userId,
         author: identity.displayName,
         legacy_id: createLegacyId(),
       };
       const { data, error } = await client.from('rehearsal_logs').insert(payload)
-        .select('id,production_id,legacy_id,title,rehearsal_date,author,author_profile_id,category,content,tags,created_at,updated_at').single();
+        .select('id,production_id,legacy_id,title,rehearsal_date,author,author_display_name,author_profile_id,category,content,tags,created_at,updated_at').single();
       if (error || !data || !data.id) throw error || new Error('Missing created rehearsal log');
       return data;
     } catch (error) {
@@ -387,11 +454,11 @@
   async function updateRehearsalLog(logId, changes) {
     try {
       const client = await getClient();
-      await requireCurrentIdentity(client);
-      const payload = normalizeLogInput(changes);
+      const identity = await requireCurrentIdentity(client);
+      const payload = normalizeLogInput(changes, identity.displayName);
       const { data, error } = await client.from('rehearsal_logs').update(payload)
         .eq('id', requireUuid(logId, '연습일지 ID'))
-        .select('id,production_id,legacy_id,title,rehearsal_date,author,author_profile_id,category,content,tags,created_at,updated_at').single();
+        .select('id,production_id,legacy_id,title,rehearsal_date,author,author_display_name,author_profile_id,category,content,tags,created_at,updated_at').single();
       if (error || !data) throw error || new Error('Missing updated rehearsal log');
       return data;
     } catch (error) {
@@ -502,6 +569,12 @@
   }
 
   const service = Object.freeze({
+    getPublicArchiveProduction,
+    getPublicArchiveTasks,
+    getPublicArchiveEvents,
+    getPublicArchiveRehearsalLogs,
+    getPublicArchiveRehearsalImages,
+    buildPublicRehearsalImageUrl,
     getProductions,
     getCurrentProduction,
     getTasks,

@@ -81,9 +81,32 @@ const eventDeleteInFlight = new Set();
 let authMode = 'login';
 let productionAccessStatus = 'UNKNOWN';
 let currentProductionRole = null;
+const PUBLIC_ARCHIVE_SLUG = String(window.AI_DRAMA_CONFIG && window.AI_DRAMA_CONFIG.PUBLIC_ARCHIVE_SLUG || '').trim();
+let publicArchiveState = createEmptyPublicArchiveState();
 
 const EVENT_TYPES = ['연습', '회의', '리딩', '공연', '설치/기술', '기타'];
 const REHEARSAL_CATEGORIES = ['전체연습', '연기', '연출', '무대', '회의', '기타'];
+
+function createEmptyPublicArchiveState(status = 'UNKNOWN') {
+  return {
+    status,
+    production: null,
+    tasks: [],
+    events: [],
+    rehearsalLogs: [],
+    imagesByLog: new Map(),
+    error: null,
+  };
+}
+
+function canWriteProduction() {
+  return Boolean(authSession && productionAccessStatus === 'READY');
+}
+
+function canCreateTask() { return canWriteProduction(); }
+function canEditTask() { return canWriteProduction(); }
+function canManageRehearsal() { return canWriteProduction(); }
+function canDeleteProductionContent() { return canWriteProduction() && currentProductionRole === 'ADMIN'; }
 
 /* ---------------- 데이터 로드 / 저장 ---------------- */
 
@@ -204,7 +227,7 @@ async function init() {
     await loadSupabaseRehearsalContext();
     await loadSupabaseTaskContext();
     await loadSupabaseEventContext();
-  }
+  } else await loadPublicArchiveContext();
   authReady = true;
   render();
   if (authSession) startSupabaseReadProbe();
@@ -248,6 +271,9 @@ async function applyAuthSession(session, event) {
   authUser = session && session.user || null;
   authMessage = '';
   if (authSession) {
+    publicArchiveState = createEmptyPublicArchiveState();
+    rehearsalArchiveMode = 'list';
+    selectedRehearsalLogId = null;
     await loadCurrentProfile();
     await loadSupabaseRehearsalContext();
     await loadSupabaseTaskContext();
@@ -263,7 +289,10 @@ async function applyAuthSession(session, event) {
     rehearsalImagesByLog.clear();
     clearPendingRehearsalImages();
     rehearsalImageDialog = null;
-    currentView = 'home';
+    rehearsalArchiveMode = 'list';
+    selectedRehearsalLogId = null;
+    currentPartFilter = '전체';
+    await loadPublicArchiveContext();
     pendingProtectedView = null;
     isLoginViewOpen = false;
   }
@@ -288,7 +317,8 @@ function mapSupabaseRehearsalLog(row) {
   return {
     id: row.id,
     title: row.title,
-    author: row.author,
+    author: row.author_display_name || row.author,
+    authorDisplayName: row.author_display_name || row.author,
     date: row.rehearsal_date,
     category: row.category,
     content: row.content,
@@ -299,6 +329,123 @@ function mapSupabaseRehearsalLog(row) {
     authorProfileId: row.author_profile_id,
     source: 'supabase',
   };
+}
+
+function mapPublicArchiveProduction(row) {
+  return {
+    publicSlug: row.public_slug,
+    title: row.title || '',
+    date: row.performance_date || '',
+    venue: row.venue || '',
+    venueInfo: row.public_venue_info || '',
+    projectStartDate: row.project_start_date || '',
+    status: row.status || '준비중',
+    parts: Array.isArray(row.parts) ? row.parts : [],
+    rehearsalAvailability: row.public_rehearsal_summary || '',
+  };
+}
+
+function mapPublicArchiveTask(row) {
+  return {
+    publicId: row.public_id,
+    prerequisitePublicId: row.prerequisite_public_id || null,
+    part: row.part || '',
+    name: row.title || '',
+    deadline: row.deadline || '',
+    status: row.status || '대기',
+    priority: row.priority || '보통',
+    required: Boolean(row.required),
+    preShowCheck: Boolean(row.pre_show_check),
+  };
+}
+
+function mapPublicArchiveEvent(row) {
+  const shortTime = value => value ? String(value).slice(0, 5) : '';
+  return {
+    publicId: row.public_id,
+    title: row.title || '',
+    date: row.event_date || '',
+    startTime: shortTime(row.start_time),
+    endTime: shortTime(row.end_time),
+    type: row.category || '기타',
+    part: row.part || '',
+    publicLocation: row.public_location || '',
+    publicDescription: row.public_description || '',
+  };
+}
+
+function mapPublicArchiveRehearsalLog(row) {
+  return {
+    publicId: row.public_id,
+    title: row.title || '',
+    author: row.author_display_name || '전대극회 부원',
+    date: row.rehearsal_date || '',
+    category: row.category || '기타',
+    content: row.content || '',
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    createdDate: row.created_date || '',
+    updatedDate: row.updated_date || '',
+  };
+}
+
+async function loadPublicArchiveContext() {
+  publicArchiveState = createEmptyPublicArchiveState('LOADING');
+  const service = window.SupabaseDataService;
+  if (!PUBLIC_ARCHIVE_SLUG || !service || typeof service.getPublicArchiveProduction !== 'function') {
+    publicArchiveState = createEmptyPublicArchiveState('ERROR');
+    publicArchiveState.error = 'PUBLIC_ARCHIVE_UNAVAILABLE';
+    return;
+  }
+  try {
+    const productionResult = await service.getPublicArchiveProduction(PUBLIC_ARCHIVE_SLUG);
+    if (productionResult.status === 'EMPTY') {
+      publicArchiveState = createEmptyPublicArchiveState('EMPTY');
+      return;
+    }
+    if (productionResult.status !== 'PASS' || !productionResult.data || productionResult.data.length !== 1) {
+      throw Object.assign(new Error('PUBLIC_ARCHIVE_READ_FAILED'), { code: productionResult.status });
+    }
+    const [taskResult, eventResult, rehearsalResult] = await Promise.all([
+      service.getPublicArchiveTasks(PUBLIC_ARCHIVE_SLUG),
+      service.getPublicArchiveEvents(PUBLIC_ARCHIVE_SLUG),
+      service.getPublicArchiveRehearsalLogs(PUBLIC_ARCHIVE_SLUG),
+    ]);
+    for (const result of [taskResult, eventResult, rehearsalResult]) {
+      if (!['PASS', 'EMPTY'].includes(result.status)) throw Object.assign(new Error('PUBLIC_ARCHIVE_READ_FAILED'), { code: result.status });
+    }
+    publicArchiveState = {
+      status: 'READY',
+      production: mapPublicArchiveProduction(productionResult.data[0]),
+      tasks: (taskResult.data || []).map(mapPublicArchiveTask),
+      events: (eventResult.data || []).map(mapPublicArchiveEvent),
+      rehearsalLogs: (rehearsalResult.data || []).map(mapPublicArchiveRehearsalLog),
+      imagesByLog: new Map(),
+      error: null,
+    };
+  } catch (error) {
+    publicArchiveState = createEmptyPublicArchiveState('ERROR');
+    publicArchiveState.error = error.code || 'PUBLIC_ARCHIVE_READ_FAILED';
+    console.warn('[Public Archive]', publicArchiveState.error);
+  }
+}
+
+async function loadPublicArchiveRehearsalImages(rehearsalPublicId) {
+  if (publicArchiveState.status !== 'READY' || !window.SupabaseDataService) return [];
+  const result = await window.SupabaseDataService.getPublicArchiveRehearsalImages(PUBLIC_ARCHIVE_SLUG, rehearsalPublicId);
+  if (!['PASS', 'EMPTY'].includes(result.status)) return [];
+  const images = (result.data || []).map(row => ({
+    publicId: row.image_public_id,
+    rehearsalPublicId: row.rehearsal_public_id,
+    sortOrder: Number(row.sort_order) || 0,
+    deliveryUrl: window.SupabaseDataService.buildPublicRehearsalImageUrl(
+      PUBLIC_ARCHIVE_SLUG,
+      row.rehearsal_public_id,
+      row.image_public_id
+    ),
+    deliveryStatus: 'ready',
+  }));
+  publicArchiveState.imagesByLog.set(rehearsalPublicId, images);
+  return images;
 }
 
 function clearPendingRehearsalImages() {
@@ -314,6 +461,7 @@ function captureRehearsalFormDraft() {
   rehearsalFormDraft = {
     title: document.getElementById('r-title').value,
     author: document.getElementById('r-author').value,
+    authorDisplayName: document.getElementById('r-author').value,
     date: document.getElementById('r-date').value,
     category: form.querySelector('[name="rehearsal-category"]:checked').value,
     content: document.getElementById('r-content').value,
@@ -382,16 +530,21 @@ function renderRehearsalImageItems(log, editable) {
 
 function renderRehearsalImageDialog() {
   if (!rehearsalImageDialog) return '';
-  const log = findRehearsalLogById(rehearsalImageDialog.logId);
-  const images = rehearsalImagesByLog.get(rehearsalImageDialog.logId) || [];
+  const isPublic = Boolean(rehearsalImageDialog.isPublic && !authSession);
+  const log = isPublic ? findPublicRehearsalLog(rehearsalImageDialog.logId) : findRehearsalLogById(rehearsalImageDialog.logId);
+  const images = isPublic
+    ? (publicArchiveState.imagesByLog.get(rehearsalImageDialog.logId) || [])
+    : (rehearsalImagesByLog.get(rehearsalImageDialog.logId) || []);
   if (!log || !images.length) return '';
   const index = Math.max(0, Math.min(rehearsalImageDialog.index, images.length - 1));
   const image = images[index];
+  const imageUrl = isPublic ? image.deliveryUrl : image.signedUrl;
+  const imageFailed = isPublic ? image.deliveryStatus === 'failed' : image.signedStatus === 'failed';
   return `<div class="image-dialog-backdrop" data-image-dialog-backdrop>
     <section class="image-dialog" role="dialog" aria-modal="true" aria-label="${attr(log.title)} 이미지 확대 보기" tabindex="-1">
       <header class="image-dialog-header"><span aria-live="polite">${index + 1} / ${images.length}</span><button type="button" data-image-dialog-close aria-label="이미지 확대 보기 닫기">닫기 ×</button></header>
       <div class="image-dialog-stage">
-        ${image.signedUrl && image.signedStatus !== 'failed' ? `<img src="${attr(image.signedUrl)}" data-dialog-image data-signed-image-path="${attr(image.storage_path)}" alt="${attr(rehearsalImageAlt(log, index))}">` : '<p class="image-dialog-error" role="status">이미지를 불러오지 못했습니다.</p>'}
+        ${imageUrl && !imageFailed ? `<img src="${attr(imageUrl)}" data-dialog-image ${isPublic ? `data-public-image data-public-image-id="${attr(image.publicId)}"` : `data-signed-image-path="${attr(image.storage_path)}"`} alt="${attr(rehearsalImageAlt(log, index))}">` : '<p class="image-dialog-error" role="status">이미지를 불러오지 못했습니다.</p>'}
       </div>
       <footer class="image-dialog-controls">
         <button type="button" data-image-dialog-prev aria-label="이전 이미지" ${images.length === 1 ? 'disabled' : ''}>← 이전</button>
@@ -402,11 +555,12 @@ function renderRehearsalImageDialog() {
 }
 
 async function showRehearsalImageDialog(logId, imageId) {
-  const images = rehearsalImagesByLog.get(logId) || [];
-  const index = images.findIndex(image => image.id === imageId);
+  const isPublic = !authSession;
+  const images = isPublic ? (publicArchiveState.imagesByLog.get(logId) || []) : (rehearsalImagesByLog.get(logId) || []);
+  const index = images.findIndex(image => (isPublic ? image.publicId : image.id) === imageId);
   if (index < 0) return;
-  await ensureFreshRehearsalImageUrl(images[index]);
-  rehearsalImageDialog = { logId, index, restoreImageId: imageId };
+  if (!isPublic) await ensureFreshRehearsalImageUrl(images[index]);
+  rehearsalImageDialog = { logId, index, restoreImageId: imageId, isPublic };
   render();
 }
 
@@ -420,10 +574,13 @@ function closeRehearsalImageDialog() {
 
 async function stepRehearsalImageDialog(direction) {
   if (!rehearsalImageDialog) return;
-  const images = rehearsalImagesByLog.get(rehearsalImageDialog.logId) || [];
+  const isPublic = Boolean(rehearsalImageDialog.isPublic && !authSession);
+  const images = isPublic
+    ? (publicArchiveState.imagesByLog.get(rehearsalImageDialog.logId) || [])
+    : (rehearsalImagesByLog.get(rehearsalImageDialog.logId) || []);
   if (images.length < 2) return;
   rehearsalImageDialog.index = (rehearsalImageDialog.index + direction + images.length) % images.length;
-  await ensureFreshRehearsalImageUrl(images[rehearsalImageDialog.index]);
+  if (!isPublic) await ensureFreshRehearsalImageUrl(images[rehearsalImageDialog.index]);
   render();
 }
 
@@ -578,7 +735,7 @@ function renderLoginView() {
     <section class="auth-panel" aria-labelledby="auth-title">
       <span class="auth-kicker">JEONDAE THEATRE / PRODUCTION DESK</span>
       <h1 id="auth-title" class="auth-wordmark">전대극회</h1>
-      <p class="auth-intro">${isSignup ? '부원 계정을 만들고 현재 공연 제작에 참여하세요.' : '공연 제작 기록은 등록된 부원만 열람할 수 있습니다.'}</p>
+      <p class="auth-intro">${isSignup ? '부원 계정을 만들고 현재 공연 제작에 참여하세요.' : '공연 제작 기록을 관리하려면 부원 계정으로 로그인하세요.'}</p>
       <form id="auth-login-form" class="auth-form">
         ${isSignup ? '<div class="field"><label for="auth-name">이름</label><input id="auth-name" name="displayName" type="text" autocomplete="name" required></div>' : ''}
         <div class="field"><label for="auth-email">이메일</label><input id="auth-email" name="email" type="email" autocomplete="username" required></div>
@@ -647,7 +804,7 @@ function renderTopNavigation() {
         ${navigation.map(([view, label]) => `<button type="button" data-view="${view}" class="${currentView === view ? 'is-active' : ''}" ${currentView === view ? 'aria-current="page"' : ''}>${label}</button>`).join('')}
       </nav>
       <div class="top-shell-actions">
-        ${authSession ? `<button type="button" class="top-shell-new-task" data-new-task>+ 새 업무</button>
+        ${authSession ? `${canCreateTask() ? '<button type="button" class="top-shell-new-task" data-new-task>+ 새 업무</button>' : ''}
         <div class="top-shell-account">
           <span class="top-shell-account-name" title="${attr(authUser && authUser.email || '')}">${escapeHtml(authProfile && authProfile.display_name || (authUser && authUser.email ? authUser.email.split('@')[0] : 'Account'))}${currentProductionRole ? ` · ${escapeHtml(currentProductionRole)}` : ''}</span>
           <button type="button" class="top-shell-logout" data-auth-logout>로그아웃</button>
@@ -658,7 +815,11 @@ function renderTopNavigation() {
 }
 
 function renderCurrentView(p, dDay, stage, risks) {
-  if (!authSession && currentView !== 'home') return renderAuthRequiredView(currentView);
+  if (!authSession) {
+    if (currentView === 'home') return renderPublicHome();
+    if (publicArchiveState.status !== 'READY') return renderPublicArchiveUnavailable();
+    return renderPublicArchiveView(currentView);
+  }
   if (authSession && productionAccessStatus === 'ERROR' && currentView !== 'home') return renderMembershipErrorView();
   if (currentView === 'performance') return renderViewPage('performance', renderPerformanceForm(p, true));
   if (currentView === 'production') return renderViewPage('production', renderDashboard(p, stage) + renderRisks(risks));
@@ -679,11 +840,89 @@ function renderPublicHome() {
       <div class="motion-hero-copy">
         <span class="hero-production-label fade-rise">JEONDAE THEATRE / PRODUCTION ARCHIVE</span>
         <h1 id="motion-hero-title" class="fade-rise-delay"><span>전대극회</span><em>무대에 오르기 전부터.</em></h1>
-        <p class="hero-description fade-rise-delay-2">공연을 만드는 사람들의 과정과 기록.<br>부원 전용 Production Desk에서 이어집니다.</p>
+        <p class="hero-description fade-rise-delay-2">공연 제작 과정은 누구나 열람할 수 있고,<br>부원은 로그인 후 기록과 업무를 관리합니다.</p>
         <div class="hero-actions fade-rise-delay-2"><button type="button" class="hero-dashboard-cta" data-auth-login>부원 로그인</button></div>
       </div>
       <div class="hero-footnote fade-rise-delay-2"><span>JEONDAE THEATRE ARCHIVE</span><span>EST. 1980</span></div>
     </div>
+  </section>`;
+}
+
+function renderPublicArchiveUnavailable() {
+  const isError = publicArchiveState.status === 'ERROR';
+  return `<section class="protected-view public-archive-unavailable" aria-labelledby="public-archive-unavailable-title">
+    <p class="auth-kicker">PUBLIC PRODUCTION ARCHIVE</p>
+    <h1 id="public-archive-unavailable-title">현재 공개된 공연 아카이브가 없습니다.</h1>
+    <p>${isError ? '아카이브를 불러오지 못했습니다. 잠시 후 다시 확인해 주세요.' : '공개 준비가 완료되면 이 곳에서 제작 과정과 기록을 볼 수 있습니다.'}</p>
+  </section>`;
+}
+
+function renderReadOnlyLabel() {
+  return '<p class="public-read-only"><span aria-hidden="true">●</span> 읽기 전용 · PUBLIC ARCHIVE</p>';
+}
+
+function renderPublicArchiveView(view) {
+  const production = publicArchiveState.production;
+  if (view === 'performance') return renderViewPage('performance', renderReadOnlyLabel() + renderPublicPerformance(production));
+  if (view === 'production') return renderViewPage('production', renderReadOnlyLabel() + renderPublicDashboard(production, publicArchiveState.tasks));
+  if (view === 'tasks') return renderViewPage('tasks', renderReadOnlyLabel() + renderPublicTaskTable(production, publicArchiveState.tasks));
+  if (view === 'calendar') return renderViewPage('calendar', renderReadOnlyLabel() + renderCalendar(production, { readOnly: true, tasks: publicArchiveState.tasks, events: publicArchiveState.events }));
+  if (view === 'rehearsal') return renderViewPage('rehearsal', renderReadOnlyLabel() + renderPublicRehearsalArchive());
+  if (view === 'preshow') return renderViewPage('preshow', renderReadOnlyLabel() + renderPublicPreShowChecklist(publicArchiveState.tasks));
+  return renderPublicHome();
+}
+
+function renderPublicPerformance(p) {
+  const fields = [
+    ['작품', p.title || '미정'], ['공연일', formatDisplayDate(p.date) || '미정'],
+    ['공연장', p.venue || '미정'], ['프로젝트 시작일', formatDisplayDate(p.projectStartDate) || '미정'],
+    ['현재 상태', p.status || '준비중'],
+  ];
+  if (p.venueInfo) fields.push(['공연장 안내', p.venueInfo]);
+  if (p.rehearsalAvailability) fields.push(['연습 안내', p.rehearsalAvailability]);
+  return `<section class="section section-performance public-performance" id="section-setup">
+    <div class="performance-summary"><dl>${fields.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl></div>
+    <div class="public-production-parts"><h3>제작 파트</h3><div class="chip-row">${p.parts.length ? p.parts.map(part => `<span class="chip">${escapeHtml(part)}</span>`).join('') : '<span class="text-faint">공개된 파트가 없습니다.</span>'}</div></div>
+  </section>`;
+}
+
+function getPublicDashboardData(p, tasks) {
+  const incomplete = tasks.filter(task => task.status !== '완료');
+  const completed = tasks.length - incomplete.length;
+  const byPart = Object.fromEntries((p.parts || []).map(part => [part, { total: 0, done: 0 }]));
+  tasks.forEach(task => {
+    const part = task.part || '기타';
+    if (!byPart[part]) byPart[part] = { total: 0, done: 0 };
+    byPart[part].total += 1;
+    if (task.status === '완료') byPart[part].done += 1;
+  });
+  const statusCounts = Object.fromEntries(TASK_STATUS.map(status => [status, tasks.filter(task => task.status === status).length]));
+  return { incomplete, completed, byPart, statusCounts };
+}
+
+function renderPublicDashboard(p, tasks) {
+  const summary = getPublicDashboardData(p, tasks);
+  const progress = tasks.length ? Math.round((summary.completed / tasks.length) * 100) : 0;
+  return `<section class="section section-dashboard public-dashboard" id="section-dashboard">
+    <div class="stat-cards">
+      <div class="stat"><div class="val">${tasks.length}</div><div class="lbl">전체 업무</div></div>
+      <div class="stat"><div class="val">${summary.completed}</div><div class="lbl">완료</div></div>
+      <div class="stat"><div class="val">${summary.incomplete.length}</div><div class="lbl">미완료</div></div>
+      <div class="stat"><div class="val">${progress}%</div><div class="lbl">전체 진행률</div></div>
+    </div>
+    <div class="grid2"><div><h3>파트별 진행률</h3>${renderPartStatus(summary.byPart)}</div>
+    <div><h3>상태별 업무</h3>${Object.entries(summary.statusCounts).map(([status, count]) => `<div class="check-item"><span class="badge ${attr(status)}">${escapeHtml(status)}</span><span class="grow">${count}건</span></div>`).join('')}</div></div>
+  </section>`;
+}
+
+function renderPublicTaskTable(p, tasks) {
+  const parts = ['전체', ...(p.parts || [])];
+  const filtered = currentPartFilter === '전체' ? tasks : tasks.filter(task => task.part === currentPartFilter);
+  return `<section class="section task-ledger public-task-ledger" id="section-tasks">
+    <div class="chip-row public-task-filters">${parts.map(part => `<button type="button" class="small ${currentPartFilter === part ? '' : 'ghost'}" data-filter-part="${attr(part)}">${escapeHtml(part)}</button>`).join('')}</div>
+    ${filtered.length ? `<div class="table-scroll"><table><thead><tr><th>업무명</th><th>담당 파트</th><th>마감일</th><th>상태</th><th>우선순위</th><th>필수</th><th>공연 전 체크</th></tr></thead><tbody>
+      ${filtered.map(task => `<tr><td>${escapeHtml(task.name)}</td><td>${escapeHtml(task.part)}</td><td class="mono">${escapeHtml(task.deadline || '—')}</td><td><span class="badge ${attr(task.status)}">${escapeHtml(task.status)}</span></td><td>${escapeHtml(task.priority)}</td><td>${task.required ? '✓' : '—'}</td><td>${task.preShowCheck ? '✓' : '—'}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">공개된 업무가 없습니다.</div>'}
   </section>`;
 }
 
@@ -921,7 +1160,7 @@ function renderTaskTable(p) {
             <td>${t.required ? '✓' : '—'}</td>
             <td>${t.preShowCheck ? '✓' : '—'}</td>
             <td class="mono">${t.taskId}</td>
-            <td>${currentProductionRole === 'ADMIN' ? `<button type="button" class="small danger" data-del-task="${attr(t.taskId)}" ${taskDeleteInFlight.has(t.taskId) ? 'disabled' : ''}>${taskDeleteInFlight.has(t.taskId) ? '삭제 중…' : '삭제'}</button>` : '—'}</td>
+            <td>${canDeleteProductionContent() ? `<button type="button" class="small danger" data-del-task="${attr(t.taskId)}" ${taskDeleteInFlight.has(t.taskId) ? 'disabled' : ''}>${taskDeleteInFlight.has(t.taskId) ? '삭제 중…' : '삭제'}</button>` : '—'}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1154,15 +1393,15 @@ function toDateKey(year, monthIndex, day) {
   return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
-function getCalendarItems(p) {
-  const taskItems = state.tasks.filter(task => task.deadline).map(task => ({
-    source: 'task', id: task.taskId, date: task.deadline, title: task.name,
+function getCalendarItems(p, tasks = state.tasks, events = state.events, readOnly = false) {
+  const taskItems = tasks.filter(task => task.deadline).map(task => ({
+    source: 'task', id: task.publicId || task.taskId, date: task.deadline, title: task.name,
     time: '', type: 'TASK', meta: `${task.part || '파트 미정'} · 마감`, status: task.status,
   }));
-  const eventItems = state.events.filter(event => event.date).map(event => ({
-    source: 'event', id: event.id, date: event.date, title: event.title,
+  const eventItems = events.filter(event => event.date).map(event => ({
+    source: 'event', id: event.publicId || event.id, date: event.date, title: event.title,
     time: event.startTime || '', endTime: event.endTime || '', type: event.type || '기타',
-    meta: [event.part, event.location].filter(Boolean).join(' · '), event,
+    meta: [event.part, readOnly ? event.publicLocation : event.location].filter(Boolean).join(' · '), event, readOnly,
   }));
   const performanceItems = p.date ? [{
     source: 'performance', id: 'performance-date', date: p.date,
@@ -1190,10 +1429,11 @@ function getCalendarGridDates(year, month) {
   );
 }
 
-function renderCalendar(p) {
+function renderCalendar(p, options = {}) {
+  const { readOnly = false, tasks = state.tasks, events = state.events } = options;
   const year = calendarCursor.getFullYear();
   const month = calendarCursor.getMonth();
-  const allItems = getCalendarItems(p);
+  const allItems = getCalendarItems(p, tasks, events, readOnly);
   const itemsByDate = {};
   allItems.forEach(item => { (itemsByDate[item.date] ||= []).push(item); });
   const weekdayLabels = ['일', '월', '화', '수', '목', '금', '토'];
@@ -1219,10 +1459,10 @@ function renderCalendar(p) {
       <h3>${year}년 ${month + 1}월</h3>
       <button type="button" class="calendar-nav" data-calendar-next aria-label="다음 달">→</button>
       <button type="button" class="small ghost calendar-today" data-calendar-today>오늘</button>
-      <button type="button" class="calendar-add" data-new-event>+ 새 일정 추가</button>
+      ${readOnly ? '' : '<button type="button" class="calendar-add" data-new-event>+ 새 일정 추가</button>'}
     </div>
     ${eventSyncMessage && !isEventFormOpen ? `<p class="note event-sync-message" role="status">${escapeHtml(eventSyncMessage)}</p>` : ''}
-    ${renderEventForm(p)}
+    ${readOnly ? '' : renderEventForm(p)}
     <div class="calendar-scroll" aria-label="${year}년 ${month + 1}월 제작 일정표">
       <div class="calendar-grid calendar-weekdays">${weekdayLabels.map(day => `<div>${day}</div>`).join('')}</div>
       <div class="calendar-grid calendar-month">${cells}</div>
@@ -1231,7 +1471,7 @@ function renderCalendar(p) {
       <div class="selected-date-panel">
         <span class="calendar-eyebrow">SELECTED DATE</span>
         <h3>${formatDisplayDate(selectedCalendarDate)}</h3>
-        ${selectedItems.length ? selectedItems.map(item => renderScheduleRow(item, true)).join('') : '<div class="empty">선택한 날짜에 일정이 없습니다.</div>'}
+        ${selectedItems.length ? selectedItems.map(item => renderScheduleRow(item, !readOnly)).join('') : '<div class="empty">선택한 날짜에 일정이 없습니다.</div>'}
       </div>
       <div class="upcoming-panel">
         <span class="calendar-eyebrow">UPCOMING SCHEDULE</span>
@@ -1244,13 +1484,14 @@ function renderCalendar(p) {
 
 function renderScheduleRow(item, showActions = false) {
   const timeText = item.time ? `${item.time}${item.endTime ? `–${item.endTime}` : ''}` : 'ALL DAY';
-  const detail = item.event && item.event.memo ? `${item.meta ? `${item.meta} · ` : ''}${item.event.memo}` : (item.meta || item.type);
+  const description = item.readOnly ? item.event && item.event.publicDescription : item.event && item.event.memo;
+  const detail = description ? `${item.meta ? `${item.meta} · ` : ''}${description}` : (item.meta || item.type);
   return `<div class="schedule-row ${item.source}-schedule">
     <span class="schedule-date">${item.date.slice(5).replace('-', '.')}</span>
     <span class="schedule-time">${escapeHtml(timeText)}</span>
     <span class="schedule-copy"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(detail)}</small></span>
     <span class="schedule-kind">${escapeHtml(item.type)}</span>
-    ${showActions && item.source === 'event' ? `<span class="schedule-actions"><button type="button" class="small ghost" data-edit-event="${attr(item.id)}">수정</button>${currentProductionRole === 'ADMIN' ? `<button type="button" class="small danger" data-delete-event="${attr(item.id)}" ${eventDeleteInFlight.has(item.id) ? 'disabled' : ''}>${eventDeleteInFlight.has(item.id) ? '삭제 중…' : '삭제'}</button>` : ''}</span>` : ''}
+    ${showActions && item.source === 'event' && canWriteProduction() ? `<span class="schedule-actions"><button type="button" class="small ghost" data-edit-event="${attr(item.id)}">수정</button>${canDeleteProductionContent() ? `<button type="button" class="small danger" data-delete-event="${attr(item.id)}" ${eventDeleteInFlight.has(item.id) ? 'disabled' : ''}>${eventDeleteInFlight.has(item.id) ? '삭제 중…' : '삭제'}</button>` : ''}</span>` : ''}
   </div>`;
 }
 
@@ -1276,6 +1517,69 @@ function renderEventForm(p) {
 }
 
 /* ---------------- Rehearsal Archive ---------------- */
+
+function getFilteredPublicRehearsalLogs() {
+  const query = rehearsalSearchQuery.trim().toLocaleLowerCase('ko-KR');
+  return [...publicArchiveState.rehearsalLogs]
+    .filter(log => {
+      if (rehearsalCategoryFilter !== '전체' && log.category !== rehearsalCategoryFilter) return false;
+      if (!query) return true;
+      return [log.title, log.content, log.author, ...(log.tags || [])]
+        .some(value => String(value || '').toLocaleLowerCase('ko-KR').includes(query));
+    })
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdDate).localeCompare(String(a.createdDate)));
+}
+
+function findPublicRehearsalLog(publicId) {
+  return publicArchiveState.rehearsalLogs.find(log => log.publicId === publicId);
+}
+
+function renderPublicRehearsalArchive() {
+  const selected = findPublicRehearsalLog(selectedRehearsalLogId);
+  if (rehearsalArchiveMode === 'detail' && selected) return renderPublicRehearsalDetail(selected);
+  rehearsalArchiveMode = 'list';
+  return renderPublicRehearsalList();
+}
+
+function renderPublicRehearsalList() {
+  const logs = getFilteredPublicRehearsalLogs();
+  return `<section class="section section-rehearsal public-rehearsal-list" id="section-rehearsal">
+    ${renderRehearsalHeading('연습일지')}
+    <div class="rehearsal-list-toolbar"><p><span class="archive-count">${String(publicArchiveState.rehearsalLogs.length).padStart(2, '0')}</span> NOTES IN ARCHIVE</p></div>
+    <form class="rehearsal-search" id="rehearsal-search-form" role="search"><label for="rehearsal-search-input">연습일지 검색</label><div><input id="rehearsal-search-input" type="search" value="${attr(rehearsalSearchQuery)}" placeholder="제목, 본문, 작성자, 태그 검색"><button type="submit" class="ghost">검색</button></div></form>
+    <div class="rehearsal-filters" aria-label="연습일지 분류">${['전체', ...REHEARSAL_CATEGORIES].map(category => `<button type="button" data-rehearsal-category="${attr(category)}" class="${rehearsalCategoryFilter === category ? 'is-active' : ''}" aria-pressed="${rehearsalCategoryFilter === category}">${escapeHtml(category)}</button>`).join('')}</div>
+    <div class="rehearsal-list" aria-live="polite">${logs.length ? logs.map(log => `<article class="rehearsal-list-item"><button type="button" data-rehearsal-detail="${attr(log.publicId)}" aria-label="${attr(log.title)} 연습일지 읽기"><span class="rehearsal-index">${escapeHtml(log.category)}</span><strong>${escapeHtml(log.title)}</strong><span class="rehearsal-list-meta">${escapeHtml(log.author)} · ${formatDisplayDate(log.date)}</span>${log.tags.length ? `<span class="rehearsal-list-tags">${log.tags.slice(0, 3).map(tag => `#${escapeHtml(tag)}`).join(' ')}</span>` : ''}</button></article>`).join('') : '<div class="rehearsal-empty"><strong>공개된 연습일지가 없습니다.</strong></div>'}</div>
+  </section>`;
+}
+
+function renderPublicRehearsalDetail(log) {
+  const images = publicArchiveState.imagesByLog.get(log.publicId) || [];
+  return `<section class="section section-rehearsal rehearsal-detail public-rehearsal-detail" id="section-rehearsal">
+    <button type="button" class="rehearsal-back" data-rehearsal-list>← 목록으로</button>
+    <header class="rehearsal-note-header"><span class="rehearsal-index">PUBLIC REHEARSAL NOTE</span><h2>${escapeHtml(log.title)}</h2><dl><div><dt>DATE</dt><dd>${formatDisplayDate(log.date)}</dd></div><div><dt>AUTHOR</dt><dd>${escapeHtml(log.author)}</dd></div><div><dt>CATEGORY</dt><dd>${escapeHtml(log.category)}</dd></div></dl></header>
+    <div class="rehearsal-content">${escapeHtml(log.content).replace(/\n/g, '<br>')}</div>
+    ${renderPublicRehearsalImages(log, images)}
+    ${log.tags.length ? `<div class="rehearsal-detail-tags">${log.tags.map(tag => `<span>#${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+    <p class="public-rehearsal-dates">공개 기록 ${formatDisplayDate(log.createdDate) || '—'} · 최종 수정 ${formatDisplayDate(log.updatedDate) || '—'}</p>
+  </section>`;
+}
+
+function renderPublicRehearsalImages(log, images) {
+  if (!images.length) return '';
+  const ordered = [...images].sort((a, b) => a.sortOrder - b.sortOrder || a.publicId.localeCompare(b.publicId));
+  return `<div class="rehearsal-image-grid public-rehearsal-image-grid" aria-label="연습일지 사진 ${ordered.length}장">${ordered.map((image, index) => `<figure class="rehearsal-image-item" data-public-image-item>
+    ${image.deliveryUrl && image.deliveryStatus !== 'failed' ? `<button type="button" class="rehearsal-gallery-thumb" data-open-image-dialog="${attr(image.publicId)}" aria-label="${attr(rehearsalImageAlt(log, index))} 크게 보기"><img src="${attr(image.deliveryUrl)}" data-public-image data-public-image-id="${attr(image.publicId)}" alt="${attr(rehearsalImageAlt(log, index))}" loading="lazy"></button>` : '<div class="rehearsal-image-unavailable">이미지를 불러올 수 없습니다.</div>'}
+  </figure>`).join('')}</div>`;
+}
+
+function renderPublicPreShowChecklist(tasks) {
+  const items = tasks.filter(task => task.preShowCheck);
+  const done = items.filter(task => task.status === '완료').length;
+  return `<section class="section section-preshow public-preshow" id="section-checklist">
+    <div class="section-heading"><span class="act-label">ACT 06</span><span class="section-caption">PRE-SHOW / HOUSE OPEN</span><h2><span class="n">06</span>공연 전 체크 <span class="count">(${done}/${items.length})</span></h2></div>
+    ${items.length ? items.map(task => `<div class="check-item ${task.status === '완료' ? 'checked' : ''}"><span class="badge ${attr(task.status)}">${escapeHtml(task.status)}</span><span class="grow">${escapeHtml(task.name)} <span class="text-faint">· ${escapeHtml(task.part)}</span></span>${task.required ? '<span class="tag-required">필수</span>' : ''}</div>`).join('') : '<div class="empty">공개된 공연 전 체크 항목이 없습니다.</div>'}
+  </section>`;
+}
 
 function getSortedRehearsalLogs() {
   return [...rehearsalLogs, ...supabaseRehearsalLogs].sort((a, b) =>
@@ -1363,20 +1667,22 @@ function renderRehearsalForm(p, log = null) {
   const value = (key, fallback = '') => draft && draft[key] !== undefined ? draft[key] : (log && log[key] !== undefined ? log[key] : fallback);
   const tags = Array.isArray(value('tags', [])) ? value('tags', []).map(tag => `#${tag}`).join(' ') : '';
   const authors = [...new Set((p.participants || []).map(person => person.name).filter(Boolean))];
-  const usesSupabaseIdentity = !log || log.source === 'supabase';
-  const authorValue = usesSupabaseIdentity ? (authProfile && authProfile.display_name || '') : value('author');
+  const usesSupabaseStorage = !log || log.source === 'supabase';
+  const authorValue = log
+    ? value('authorDisplayName', value('author'))
+    : (authProfile && authProfile.display_name || '');
   return `<section class="section section-rehearsal rehearsal-editor" id="section-rehearsal">
     ${renderRehearsalHeading(log ? '연습일지 수정' : '새 연습 기록', log ? 'EDIT REHEARSAL NOTE' : 'NEW REHEARSAL NOTE')}
     <form id="rehearsal-log-form">
       <div class="field rehearsal-title-field"><label for="r-title">제목 *</label><input id="r-title" type="text" value="${attr(value('title'))}" required placeholder="오늘의 연습을 한 문장으로 기록하세요"></div>
       <div class="grid2">
-        <div class="field"><label for="r-author">작성자 *</label><input id="r-author" type="text" list="rehearsal-authors" value="${attr(authorValue)}" required autocomplete="name" ${usesSupabaseIdentity ? 'readonly aria-readonly="true"' : ''}><datalist id="rehearsal-authors">${authors.map(name => `<option value="${attr(name)}"></option>`).join('')}</datalist></div>
+        <div class="field"><label for="r-author">작성자명 *</label><input id="r-author" type="text" list="rehearsal-authors" value="${attr(authorValue)}" required maxlength="80" autocomplete="name"><datalist id="rehearsal-authors">${authors.map(name => `<option value="${attr(name)}"></option>`).join('')}</datalist></div>
         <div class="field"><label for="r-date">연습일 *</label><input id="r-date" type="date" value="${attr(value('date', todayStr))}" required></div>
       </div>
       <fieldset class="rehearsal-category-field"><legend>분류</legend><div>${REHEARSAL_CATEGORIES.map(category => `<label><input type="radio" name="rehearsal-category" value="${attr(category)}" ${value('category', '전체연습') === category ? 'checked' : ''}><span>${category}</span></label>`).join('')}</div></fieldset>
       <div class="field"><label for="r-content">내용 *</label><textarea id="r-content" rows="12" required placeholder="오늘 연습에서는...">${escapeHtml(value('content'))}</textarea></div>
       <div class="field"><label for="r-tags">태그 <span class="field-translation">/ 띄어쓰기 또는 쉼표로 구분</span></label><input id="r-tags" type="text" value="${attr(tags)}" placeholder="#전체연습 #런스루"></div>
-      ${usesSupabaseIdentity ? `<section class="rehearsal-image-editor" aria-labelledby="rehearsal-image-heading">
+      ${usesSupabaseStorage ? `<section class="rehearsal-image-editor" aria-labelledby="rehearsal-image-heading">
         <div class="rehearsal-image-editor-head"><div><h3 id="rehearsal-image-heading">이미지 첨부</h3><p>JPEG, PNG, WebP · 장당 8MB 이하 · 최대 12장</p></div><label class="button-like" for="rehearsal-image-input">+ 사진 추가</label></div>
         <input class="visually-hidden" id="rehearsal-image-input" type="file" accept="image/jpeg,image/png,image/webp" multiple>
         ${renderRehearsalImageItems(log, true)}
@@ -1586,7 +1892,8 @@ function bindEvents() {
       usesSupabaseEvents = false; state.events = legacyLocalEvents.map(event => ({ ...event })); eventSyncMessage = '';
       clearPendingRehearsalImages(); rehearsalImageDialog = null; rehearsalArchiveMode = 'list';
       selectedRehearsalLogId = null; pendingProtectedView = null; isLoginViewOpen = false;
-      productionAccessStatus = 'UNKNOWN'; currentProductionRole = null; authMode = 'login'; currentView = 'home';
+      productionAccessStatus = 'UNKNOWN'; currentProductionRole = null; authMode = 'login';
+      await loadPublicArchiveContext();
     } catch (error) {
       authMessage = error.message || '로그아웃하지 못했습니다.';
     } finally {
@@ -1649,6 +1956,12 @@ function bindEvents() {
   });
   document.querySelectorAll('[data-rehearsal-detail]').forEach(btn => {
     btn.onclick = async () => {
+      if (!authSession) {
+        const publicLog = findPublicRehearsalLog(btn.dataset.rehearsalDetail);
+        if (publicLog) await loadPublicArchiveRehearsalImages(publicLog.publicId);
+        selectedRehearsalLogId = btn.dataset.rehearsalDetail; rehearsalArchiveMode = 'detail'; render();
+        return;
+      }
       const target = findRehearsalLogById(btn.dataset.rehearsalDetail);
       if (target && target.source === 'supabase') await loadRehearsalImages(target.id);
       selectedRehearsalLogId = btn.dataset.rehearsalDetail; rehearsalArchiveMode = 'detail'; render();
@@ -1785,6 +2098,16 @@ function bindEvents() {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   };
+  document.querySelectorAll('[data-public-image]').forEach(image => {
+    image.onerror = () => {
+      const imageId = image.dataset.publicImageId;
+      const images = publicArchiveState.imagesByLog.get(selectedRehearsalLogId) || [];
+      const metadata = images.find(item => item.publicId === imageId);
+      if (metadata) metadata.deliveryStatus = 'failed';
+      image.hidden = true;
+      image.closest('.rehearsal-gallery-thumb, .image-dialog-stage')?.classList.add('has-image-error');
+    };
+  });
   document.querySelectorAll('[data-signed-image-path]').forEach(image => {
     image.onerror = async () => {
       const attempts = Number(image.dataset.signedRefreshAttempts || 0);
@@ -1824,6 +2147,7 @@ function bindEvents() {
     const tags = [...new Set(rawTags.split(/[\s,]+/).map(tag => tag.replace(/^#+/, '').trim()).filter(Boolean))];
     const fields = {
       title: titleInput.value.trim(),
+      authorDisplayName: authorInput.value.trim(),
       rehearsalDate: document.getElementById('r-date').value,
       category: rehearsalLogForm.querySelector('[name="rehearsal-category"]:checked').value,
       content: contentInput.value.trim(),
@@ -1899,7 +2223,9 @@ function bindEvents() {
   document.querySelectorAll('[data-event-detail]').forEach(btn => {
     btn.onclick = event => {
       event.stopPropagation();
-      const item = state.events.find(entry => entry.id === btn.dataset.eventDetail);
+      const item = authSession
+        ? state.events.find(entry => entry.id === btn.dataset.eventDetail)
+        : publicArchiveState.events.find(entry => entry.publicId === btn.dataset.eventDetail);
       if (item) selectedCalendarDate = item.date;
       render();
     };
