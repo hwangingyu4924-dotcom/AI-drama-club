@@ -531,6 +531,7 @@ button.calendar-item { width: 100%; }
 /* Public Production Archive / anonymous read-only views */
 .public-read-only { display: flex; margin: 24px 0 0; align-items: center; gap: 7px; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .public-read-only span { color: var(--color-terracotta-dark); font-size: 7px; }
+.view-page-content > .public-read-only + .section { padding-top: 26px; }
 .public-performance .performance-summary { display: block; }
 .public-performance .performance-summary dl { width: 100%; max-width: none; }
 .public-production-parts { margin-top: 42px; padding-top: 24px; border-top: 1px solid var(--color-line); }
@@ -545,6 +546,7 @@ button.calendar-item { width: 100%; }
 
 @media (max-width: 720px) {
   .public-read-only { margin-top: 18px; }
+  .view-page-content > .public-read-only + .section { padding-top: 20px; }
   .public-performance .performance-summary dl > div { grid-template-columns: 92px minmax(0, 1fr); }
   .public-dashboard .stat .val { font-size: clamp(36px, 12vw, 52px); }
   .public-task-ledger, .public-task-ledger .table-scroll { min-width: 0; max-width: 100%; }

@@ -10,7 +10,7 @@ const PRIVATE_VALUES = [
 const publicLogId = '33333333-3333-4333-8333-333333333333';
 const fixture = {
   production: [{
-    public_slug: 'spring-holding-hands-2026', title: '봄, 손을 잡다',
+    public_slug: 'spring-holding-hands-2026', title: '봄, 손을 쥐다',
     performance_date: '2026-10-18', venue: '전일빌딩245', public_venue_info: '',
     project_start_date: '2026-08-24', status: '준비중', parts: ['연출', '무대'],
     public_rehearsal_summary: '',
@@ -89,10 +89,14 @@ async function run() {
   for (const view of ['performance', 'production', 'tasks', 'calendar', 'rehearsal', 'preshow']) {
     vm.runInContext(`currentView = '${view}'; render();`, context);
     assertReadOnly(appRoot.innerHTML, view);
+    assert.strictEqual((appRoot.innerHTML.match(/<h1(?:\s|>)/g) || []).length, 1, `${view} must have one page-level heading`);
+    if (view === 'calendar') assert.ok(!appRoot.innerHTML.includes('calendar-heading'), 'public calendar repeated its page heading');
+    if (view === 'rehearsal') assert.ok(!appRoot.innerHTML.includes('rehearsal-heading'), 'public rehearsal repeated its page heading');
+    if (view === 'preshow') assert.ok(!/<h2[^>]*>[\s\S]*?공연 전 체크/.test(appRoot.innerHTML), 'public pre-show repeated its page heading');
     if (view === 'tasks') assert.ok(appRoot.innerHTML.includes('리허설 준비'), 'public task absent');
   }
   vm.runInContext("currentView = 'performance'; render();", context);
-  assert.ok(appRoot.innerHTML.includes('봄, 손을 잡다'));
+  assert.ok(appRoot.innerHTML.includes('봄, 손을 쥐다'));
   assert.ok(appRoot.innerHTML.includes('2026. 10. 18.') && appRoot.innerHTML.includes('전일빌딩245') && appRoot.innerHTML.includes('2026. 08. 24.'));
   assert.ok(!appRoot.innerHTML.includes('공연장 안내') && !appRoot.innerHTML.includes('연습 안내'));
 

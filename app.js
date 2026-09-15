@@ -1453,7 +1453,7 @@ function renderCalendar(p, options = {}) {
   const upcoming = allItems.filter(item => item.date >= todayStr).slice(0, 12);
 
   return `<section class="section section-calendar" id="section-calendar">
-    <div class="section-heading calendar-heading"><span class="act-label">ACT 06</span><span class="section-caption">PRODUCTION CALENDAR</span><h2><span class="n">06</span>일정</h2></div>
+    ${readOnly ? '' : '<div class="section-heading calendar-heading"><span class="act-label">ACT 06</span><span class="section-caption">PRODUCTION CALENDAR</span><h2><span class="n">06</span>일정</h2></div>'}
     <div class="calendar-toolbar">
       <button type="button" class="calendar-nav" data-calendar-prev aria-label="이전 달">←</button>
       <h3>${year}년 ${month + 1}월</h3>
@@ -1544,7 +1544,6 @@ function renderPublicRehearsalArchive() {
 function renderPublicRehearsalList() {
   const logs = getFilteredPublicRehearsalLogs();
   return `<section class="section section-rehearsal public-rehearsal-list" id="section-rehearsal">
-    ${renderRehearsalHeading('연습일지')}
     <div class="rehearsal-list-toolbar"><p><span class="archive-count">${String(publicArchiveState.rehearsalLogs.length).padStart(2, '0')}</span> NOTES IN ARCHIVE</p></div>
     <form class="rehearsal-search" id="rehearsal-search-form" role="search"><label for="rehearsal-search-input">연습일지 검색</label><div><input id="rehearsal-search-input" type="search" value="${attr(rehearsalSearchQuery)}" placeholder="제목, 본문, 작성자, 태그 검색"><button type="submit" class="ghost">검색</button></div></form>
     <div class="rehearsal-filters" aria-label="연습일지 분류">${['전체', ...REHEARSAL_CATEGORIES].map(category => `<button type="button" data-rehearsal-category="${attr(category)}" class="${rehearsalCategoryFilter === category ? 'is-active' : ''}" aria-pressed="${rehearsalCategoryFilter === category}">${escapeHtml(category)}</button>`).join('')}</div>
@@ -1574,9 +1573,7 @@ function renderPublicRehearsalImages(log, images) {
 
 function renderPublicPreShowChecklist(tasks) {
   const items = tasks.filter(task => task.preShowCheck);
-  const done = items.filter(task => task.status === '완료').length;
   return `<section class="section section-preshow public-preshow" id="section-checklist">
-    <div class="section-heading"><span class="act-label">ACT 06</span><span class="section-caption">PRE-SHOW / HOUSE OPEN</span><h2><span class="n">06</span>공연 전 체크 <span class="count">(${done}/${items.length})</span></h2></div>
     ${items.length ? items.map(task => `<div class="check-item ${task.status === '완료' ? 'checked' : ''}"><span class="badge ${attr(task.status)}">${escapeHtml(task.status)}</span><span class="grow">${escapeHtml(task.name)} <span class="text-faint">· ${escapeHtml(task.part)}</span></span>${task.required ? '<span class="tag-required">필수</span>' : ''}</div>`).join('') : '<div class="empty">공개된 공연 전 체크 항목이 없습니다.</div>'}
   </section>`;
 }
