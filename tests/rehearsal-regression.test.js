@@ -87,6 +87,14 @@ const assertions = `
     { taskId: 'TASK-004', name: '완료 업무', part: '무대', assignee: 'D', deadline: todayStr, status: '완료', priority: '높음', required: true },
     { taskId: 'TASK-005', name: '장기 업무', part: '연출', assignee: '', deadline: offsetDate(10), status: '보류', priority: '보통', required: false },
   ];
+  const internalTaskId = '480ae625-27c0-4aac-8140-44fbae861677';
+  const originalTaskId = state.tasks[0].taskId;
+  state.tasks[0].taskId = internalTaskId;
+  const privateTaskTable = renderTaskTable(state.performance);
+  if (privateTaskTable.includes('<th>ID</th>')) throw new Error('인증 Task table ID header 노출');
+  if (privateTaskTable.includes('<td class="mono">' + internalTaskId + '</td>')) throw new Error('Task 내부 UUID visible text 노출');
+  if (!privateTaskTable.includes('data-status="' + internalTaskId + '"')) throw new Error('Task UPDATE용 내부 식별자 누락');
+  state.tasks[0].taskId = originalTaskId;
   const dashboardData = getDashboardData(state.performance, getStage(10));
   if (state.tasks.length !== 5 || dashboardData.incomplete.length !== 4) throw new Error('전체/미완료 업무 계산 실패');
   if (dashboardData.today.length !== 1 || dashboardData.today[0].taskId !== 'TASK-002') throw new Error('오늘 할 일 계산 실패');

@@ -1140,7 +1140,7 @@ function renderTaskTable(p) {
     ${filtered.length ? `
     <div class="table-scroll">
     <table>
-      <thead><tr><th>업무명</th><th>담당 파트</th><th>담당자</th><th>마감일</th><th>상태</th><th>우선순위</th><th>선행업무</th><th>필수</th><th>체크리스트</th><th>ID</th><th></th></tr></thead>
+      <thead><tr><th>업무명</th><th>담당 파트</th><th>담당자</th><th>마감일</th><th>상태</th><th>우선순위</th><th>선행업무</th><th>필수</th><th>체크리스트</th><th></th></tr></thead>
       <tbody>
         ${filtered.map(t => {
           const prereq = getPrereqTask(t, state.tasks);
@@ -1159,7 +1159,6 @@ function renderTaskTable(p) {
             <td class="text-faint">${prereq ? escapeHtml(prereq.name) : '—'}</td>
             <td>${t.required ? '✓' : '—'}</td>
             <td>${t.preShowCheck ? '✓' : '—'}</td>
-            <td class="mono">${t.taskId}</td>
             <td>${canDeleteProductionContent() ? `<button type="button" class="small danger" data-del-task="${attr(t.taskId)}" ${taskDeleteInFlight.has(t.taskId) ? 'disabled' : ''}>${taskDeleteInFlight.has(t.taskId) ? '삭제 중…' : '삭제'}</button>` : '—'}</td>
           </tr>`;
         }).join('')}
