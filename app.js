@@ -843,7 +843,7 @@ function renderPublicHome() {
         <p class="hero-description fade-rise-delay-2">공연 제작 과정은 누구나 열람할 수 있고,<br>부원은 로그인 후 기록과 업무를 관리합니다.</p>
         <div class="hero-actions fade-rise-delay-2"><button type="button" class="hero-dashboard-cta" data-auth-login>부원 로그인</button></div>
       </div>
-      <div class="hero-footnote fade-rise-delay-2"><span>JEONDAE THEATRE ARCHIVE</span><span>EST. 1980</span></div>
+      <div class="hero-footnote fade-rise-delay-2"><span>CNU THEATRE ARCHIVE</span><span>EST. 1965</span></div>
     </div>
   </section>`;
 }
@@ -1256,7 +1256,7 @@ function renderMotionHero(p, dDay) {
           <span><b>${formatDday(dDay)}</b>${formatDisplayDate(p.date) || 'DATE TBA'}</span>
         </div>
       </div>
-      <div class="hero-footnote fade-rise-delay-2"><span>JEONDAE THEATRE ARCHIVE</span><span>SCROLL TO PRODUCTION DESK ↓</span></div>
+      <div class="hero-footnote fade-rise-delay-2"><span>CNU THEATRE ARCHIVE</span><span>SCROLL TO PRODUCTION DESK ↓</span></div>
     </div>
   </section>`;
 }
