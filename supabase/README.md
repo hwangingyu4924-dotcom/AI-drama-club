@@ -1,6 +1,8 @@
 # Supabase SQL 적용 가이드
 
-이 디렉터리는 `SUPABASE_MIGRATION_SPEC.md`의 초기 Database Schema와 RLS 준비물이다. 아직 어떤 Supabase 프로젝트에도 실행되지 않았다.
+> 운영 상태: Supabase Auth, shared production data, RLS, 자동 MEMBER 가입 및 Public Production Archive가 적용되어 있다. 이 문서는 초기 적용 순서를 보존한 참고 자료이므로 운영 DB에 전체 SQL을 재실행하지 않는다. Public Archive는 curated RPC만 익명 읽기를 허용하며 base table과 private Storage는 계속 보호된다.
+
+이 디렉터리는 `SUPABASE_MIGRATION_SPEC.md`의 초기 Database Schema와 RLS 준비물 및 이후 운영 migration을 보관한다.
 
 ## 적용 전 원칙
 

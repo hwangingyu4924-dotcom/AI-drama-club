@@ -2,6 +2,15 @@
 
 전대극회 공연 제작을 위한 업무자동화 대시보드입니다.
 
+## 현재 운영 아키텍처
+
+- 제작 콘텐츠 읽기는 Public Archive RPC를 통해 누구나 사용할 수 있습니다.
+- 작성·수정은 현재 Production의 인증된 MEMBER/ADMIN에게만 허용되며, 삭제 권한은 기존 RLS 역할 정책을 따릅니다.
+- 신규 인증 사용자는 현재 Production에 MEMBER로 자동 가입하고, 기존 ADMIN membership은 유지됩니다.
+- Supabase가 공연·업무·일정·연습일지의 canonical source이며, 기존 localStorage 데이터는 호환 목적으로 보존됩니다.
+- 연습일지 이미지 Storage bucket은 private입니다. 공개 이미지는 공개 식별자를 검증하는 Edge Function을 통해서만 전달됩니다.
+- 익명 응답은 curated Public Archive RPC만 사용하며 내부 UUID, membership, profile 및 Storage 경로를 공개하지 않습니다.
+
 ## 1. 프로젝트 목적
 
 > 공연 정보를 입력하면 현재 제작 단계와 필요한 업무를 판단하여
@@ -157,8 +166,8 @@ python3 verify.py
 ## 11. GitHub Pages 배포 시 참고사항
 
 - `index.html`이 Repository 최상위(루트)에 있어야 시작 페이지로 인식됩니다.
-- 데이터는 **브라우저 저장공간(localStorage)에만 저장**됩니다. 즉, 화면에서 입력·수정한 내용은 그 브라우저·그 기기에만 남고, 다른 사람이 같은 사이트에 접속해도 보이지 않습니다.
-- 팀원과 데이터를 공유하려면, 브라우저에서 입력한 내용을 참고해 `data/performance.json` / `data/tasks.json` 파일을 직접 갱신한 뒤 GitHub에 커밋하세요. (실시간 팀 공유 기능은 서버가 필요해 이번 범위에서 제외했습니다 — §13 참고)
+- 운영 데이터는 Supabase에서 팀원과 공유됩니다. `localStorage`와 정적 JSON은 기존 브라우저 데이터 호환 및 초기 fallback 용도로만 유지됩니다.
+- 익명 방문자는 활성화된 Public Archive를 읽을 수 있고, 작성·수정·삭제 기능은 인증 상태와 RLS 권한에 따라 제공됩니다.
 
 ## 12. 현재 MVP에서 구현된 범위
 
@@ -172,7 +181,6 @@ python3 verify.py
 
 ## 13. 향후 확장 아이디어 (이번 범위 밖)
 
-- 여러 사람이 동시에 같은 데이터를 보고 수정하는 실시간 팀 공유 (Firebase 등 백엔드 필요)
 - 브라우저에서 수정한 내용을 `data/*.json`으로 자동 내보내기(export) 버튼
 - 제작 단계·마감 임박 기준을 화면에서 직접 편집하는 설정 UI
 - 대본 파일 업로드·연결 기능
